@@ -1,6 +1,6 @@
 # ==============================================================================
 # SCRIPT: KryptDist.py
-# VERSION: 2026.09.08__12.35.57
+# VERSION: 2026.09.08__14.44.10
 # TARGET: Python 3.14.5
 #
 # Copyright (C) 2026 pwshAgyjkcrg761
@@ -101,12 +101,153 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt6.QtGui import QActionGroup, QPalette, QColor, QIcon
 import ctypes
 
-APP_VERSION = "2026.09.08__12.35.57"
+APP_VERSION = "2026.09.08__14.44.10"
 CHECKSUM_EXTS = (
     ".hash", ".b3", ".blake3", ".b2", ".blake2", ".blake2b", ".blake2s",
     ".sha512", ".sha256", ".sha3", ".sha3-256", ".sha3-512",
     ".xx3", ".xxh3", ".xxh", ".sha1", ".sha", ".md5", ".sfv", ".crc32", ".crc"
 )
+
+def compute_file_digest(file_path, algo_name):
+    """Calculates digest for a single file using the specified algorithm."""
+    algo_u = algo_name.upper()
+    if "CRC" in algo_u or "SFV" in algo_u:
+        crc_val = 0
+        with open(file_path, 'rb') as f:
+            while chunk := f.read(65536):
+                crc_val = zlib.crc32(chunk, crc_val)
+        return f"{crc_val & 0xFFFFFFFF:08x}"
+    elif "BLAKE3" in algo_u and HAS_BLAKE3:
+        hasher = blake3.blake3()
+    elif "BLAKE2S" in algo_u:
+        hasher = hashlib.blake2s()
+    elif "BLAKE2" in algo_u:
+        hasher = hashlib.blake2b()
+    elif "512" in algo_u and "SHA" in algo_u:
+        hasher = hashlib.sha512()
+    elif "SHA-3" in algo_u or "SHA3" in algo_u:
+        hasher = hashlib.sha3_256()
+    elif "256" in algo_u and "SHA" in algo_u:
+        hasher = hashlib.sha256()
+    elif ("XX3" in algo_u or "XXH3" in algo_u or "XXH" in algo_u) and HAS_XXHASH:
+        hasher = xxhash.xxh3_64()
+    elif "SHA-1" in algo_u or "SHA1" in algo_u:
+        hasher = hashlib.sha1()
+    elif "MD5" in algo_u:
+        hasher = hashlib.md5()
+    else:
+        hasher = blake3.blake3() if HAS_BLAKE3 else hashlib.blake2b()
+
+    with open(file_path, 'rb') as f:
+        while chunk := f.read(65536):
+            hasher.update(chunk)
+    return hasher.hexdigest()
+
+def verify_single_file_cli(target_file, specified_hash_file=None):
+    """Locates target in parent/local .hash files, computes checksum, and returns 0 (OK) or 2 (FAIL)."""
+    abs_target = os.path.abspath(target_file)
+    if not os.path.exists(abs_target):
+        return 2
+
+    # Discover candidate .hash files in working directory, target directory, and parent
+    candidate_hash_files = []
+    if specified_hash_file and os.path.exists(specified_hash_file):
+        candidate_hash_files.append(os.path.abspath(specified_hash_file))
+    else:
+        search_dirs = [os.getcwd(), os.path.dirname(abs_target), os.path.dirname(os.path.dirname(abs_target))]
+        for sdir in search_dirs:
+            if sdir and os.path.exists(sdir):
+                for f in os.listdir(sdir):
+                    if f.lower().endswith(CHECKSUM_EXTS):
+                        cand = os.path.join(sdir, f)
+                        if cand not in candidate_hash_files:
+                            candidate_hash_files.append(cand)
+
+    is_hex = lambda s: all(c in '0123456789abcdefABCDEF' for c in s)
+
+    for hfile in candidate_hash_files:
+        base_dir = os.path.dirname(hfile)
+        try:
+            rel_to_hash = os.path.normpath(os.path.relpath(abs_target, base_dir))
+        except ValueError:
+            rel_to_hash = os.path.basename(abs_target)
+        file_base = os.path.basename(abs_target)
+
+        current_algo = "BLAKE3"
+        ext = os.path.splitext(hfile)[1].lower()
+        if ext in (".sha3", ".sha3-256", ".sha3-512"): current_algo = "SHA-3"
+        elif ext == ".sha256": current_algo = "SHA-256"
+        elif ext == ".sha512": current_algo = "SHA-512"
+        elif ext == ".md5": current_algo = "MD5"
+        elif ext in (".sha1", ".sha"): current_algo = "SHA-1"
+        elif ext in (".sfv", ".crc32", ".crc"): current_algo = "SFV / CRC32"
+        elif ext in (".xx3", ".xxh3", ".xxh"): current_algo = "xx3"
+        elif ext in (".b2", ".blake2", ".blake2b"): current_algo = "BLAKE2b"
+        elif ext == ".blake2s": current_algo = "BLAKE2s"
+
+        try:
+            with open(hfile, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line_str = line.strip()
+                    line_lower = line_str.lower()
+
+                    # Detect algorithm declarations and Corz Checksum headers
+                    if line_lower.startswith("# algorithm:") or line_lower.startswith("; algorithm:"):
+                        current_algo = line_str.split(":", 1)[1].strip()
+                        continue
+                    if "blake2" in line_lower:
+                        current_algo = "BLAKE2s"
+                        if line_str.startswith('#') or line_str.startswith(';'):
+                            continue
+                    if "made with checksum" in line_lower:
+                        if current_algo == "BLAKE3":
+                            current_algo = "BLAKE2s"
+                        continue
+                    if not line_str or line_str.startswith('#') or line_str.startswith(';'):
+                        continue
+
+                    tokens = line_str.split()
+                    if len(tokens) >= 2:
+                        first_tok = tokens[0].strip()
+                        last_tok = tokens[-1].strip()
+
+                        if len(first_tok) in (8, 16, 32, 40, 64, 128) and is_hex(first_tok):
+                            expected_hash = first_tok
+                            entry_path = line_str.split(maxsplit=1)[1].lstrip('*').strip()
+                        elif len(last_tok) == 8 and is_hex(last_tok):
+                            expected_hash = last_tok
+                            entry_path = line_str.rsplit(maxsplit=1)[0].lstrip('*').strip()
+                        else:
+                            continue
+
+                        norm_entry = os.path.normpath(entry_path)
+                        if norm_entry in (rel_to_hash, file_base, os.path.normpath(target_file)):
+                            # Resolve digest algorithm heuristics
+                            h_len = len(expected_hash)
+                            algo = current_algo
+                            if h_len == 8: algo = "SFV / CRC32"
+                            elif h_len == 16: algo = "xx3"
+                            elif h_len == 32: algo = "MD5"
+                            elif h_len == 40: algo = "SHA-1"
+                            elif h_len == 64:
+                                if not any(k in current_algo.upper() for k in ["BLAKE3", "256", "BLAKE2S", "SHA-3", "SHA3"]):
+                                    algo = "BLAKE3"
+                            elif h_len == 128:
+                                if not any(k in current_algo.upper() for k in ["BLAKE2", "512"]):
+                                    algo = "BLAKE2b"
+
+                            try:
+                                calculated = compute_file_digest(abs_target, algo)
+                                if calculated.lower() == expected_hash.lower():
+                                    return 0
+                                else:
+                                    return 2
+                            except Exception:
+                                return 2
+        except Exception:
+            continue
+
+    return 2
 
 class SettingsWrapper:
     def __init__(self, config_path):
@@ -296,8 +437,20 @@ class HashWorker(QThread):
 
                 for line in lines:
                     line_str = line.strip()
-                    if line_str.startswith("# algorithm:"):
+                    line_lower = line_str.lower()
+                    
+                    # Detect algorithm declarations and Corz Checksum headers
+                    if line_lower.startswith("# algorithm:") or line_lower.startswith("; algorithm:"):
                         current_algo = line_str.split(":", 1)[1].strip()
+                        continue
+                    if "blake2" in line_lower:
+                        current_algo = "BLAKE2s"
+                        if line_str.startswith('#') or line_str.startswith(';'):
+                            continue
+                    if "made with checksum" in line_lower:
+                        # Corz checksum signature
+                        if current_algo == "BLAKE3":
+                            current_algo = "BLAKE2s"
                         continue
                     if not line_str or line_str.startswith('#') or line_str.startswith(';'):
                         continue
@@ -315,8 +468,8 @@ class HashWorker(QThread):
                             expected_hash = last_tok
                             rel_path = line_str.rsplit(maxsplit=1)[0].lstrip('*').strip()
                         else:
-                            expected_hash = first_tok
-                            rel_path = line_str.split(maxsplit=1)[1].lstrip('*').strip()
+                            # Not a valid checksum line; skip
+                            continue
 
                         full_path = os.path.join(base_dir, rel_path)
 
@@ -856,9 +1009,16 @@ class KryptDistApp(QMainWindow):
             f"<li><b>Fast Checksum & Legacy:</b> xx3 (xxHash3), SHA-1, MD5, SFV / CRC32.</li>"
             f"</ul>"
             f"<h2>VERIFICATION & OSD</h2>"
-            f"<p>Pass checksum files via command line or Windows <b>SendTo</b> menu to trigger instant verification. "
+            f"<p>Pass checksum files via command line or Windows <b>SendTo</b> menu to trigger instant container verification. "
             f"A lightweight On-Screen Display (OSD) provides real-time progress. If missing or corrupted files are detected, "
             f"the OSD alerts in red and a detailed log is saved to <code>KryptDist_internal/logs/</code>.</p>"
+            f"<h2>CLI & HEADLESS INTEGRATION</h2>"
+            f"<ul>"
+            f"<li><b>Single-File Verification:</b> Invoke with <code>-v &lt;file&gt;</code> or <code>--verify-file &lt;file&gt;</code> "
+            f"for instant, headless verification against local or parent hash containers.</li>"
+            f"<li><b>Exit Codes:</b> Returns <code>0</code> when files match, or <code>2</code> on mismatch, missing files, or errors, "
+            f"enabling seamless integration with external managers like HashMan.</li>"
+            f"</ul>"
             f"<h2>INTERFACE & SHORTCUTS</h2>"
             f"<ul>"
             f"<li><b>Drag & Drop:</b> Drag files or directories directly into the target list.</li>"
@@ -1106,6 +1266,21 @@ class KryptDistApp(QMainWindow):
 
 
 if __name__ == "__main__":
+    # Headless CLI single-file verification for external managers (e.g. HashMan)
+    if "--verify-file" in sys.argv or "-v" in sys.argv:
+        flag = "--verify-file" if "--verify-file" in sys.argv else "-v"
+        idx = sys.argv.index(flag)
+        if idx + 1 < len(sys.argv):
+            target_f = sys.argv[idx + 1]
+            specified_h = None
+            if "--hash-file" in sys.argv:
+                h_idx = sys.argv.index("--hash-file")
+                if h_idx + 1 < len(sys.argv):
+                    specified_h = sys.argv[h_idx + 1]
+            exit_code = verify_single_file_cli(target_f, specified_h)
+            sys.exit(exit_code)
+        sys.exit(2)
+
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
     window = KryptDistApp()
