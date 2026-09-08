@@ -1,6 +1,6 @@
 # ==============================================================================
 # SCRIPT: KryptDist.py
-# VERSION: 2026.09.07__22.44.55
+# VERSION: 2026.09.08__11.42.00
 # TARGET: Python 3.14.5
 #
 # Copyright (C) 2026 pwshAgyjkcrg761
@@ -101,7 +101,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt6.QtGui import QActionGroup, QPalette, QColor, QIcon
 import ctypes
 
-APP_VERSION = "2026.09.07__22.44.55"
+APP_VERSION = "2026.09.08__11.42.00"
 CHECKSUM_EXTS = (
     ".hash", ".b3", ".blake3", ".b2", ".blake2", ".blake2b", ".blake2s",
     ".sha512", ".sha256", ".sha3", ".sha3-256", ".sha3-512",
