@@ -79,11 +79,19 @@ def get_user_profile_dir():
         return buf.value
     return os.path.expanduser("~")
 
+import zlib
+
 try:
     import blake3
     HAS_BLAKE3 = True
 except ImportError:
     HAS_BLAKE3 = False
+
+try:
+    import xxhash
+    HAS_XXHASH = True
+except ImportError:
+    HAS_XXHASH = False
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
@@ -94,6 +102,11 @@ from PyQt6.QtGui import QActionGroup, QPalette, QColor, QIcon
 import ctypes
 
 APP_VERSION = "2026.09.07__22.44.55"
+CHECKSUM_EXTS = (
+    ".hash", ".b3", ".blake3", ".b2", ".blake2", ".blake2b", ".blake2s",
+    ".sha512", ".sha256", ".sha3", ".sha3-256", ".sha3-512",
+    ".xx3", ".xxh3", ".xxh", ".sha1", ".sha", ".md5", ".sfv", ".crc32", ".crc"
+)
 
 class SettingsWrapper:
     def __init__(self, config_path):
@@ -120,28 +133,38 @@ class HashWorker(QThread):
     finished = pyqtSignal(dict)
     verification_finished = pyqtSignal(dict)
     
-    def __init__(self, target_dir, algorithm, dist_subfolders, delete_subhashes=False):
+    def __init__(self, target_dir, algorithm, dist_subfolders, delete_subhashes=False, delete_primary_hash=False):
         super().__init__()
         self.target_dir = os.path.normpath(target_dir)
         self.algorithm = algorithm
         self.dist_subfolders = dist_subfolders
         self.delete_subhashes = delete_subhashes
+        self.delete_primary_hash = delete_primary_hash
         
     def run(self):
-        # Clean existing subdirectory .hash files if requested (leaves root .hash file intact)
+        root_folder_name = os.path.basename(self.target_dir)
+        master_hash_path = os.path.join(self.target_dir, f"{root_folder_name}.hash")
+
+        # Clean existing primary/master .hash file if requested
+        if self.delete_primary_hash:
+            if os.path.exists(master_hash_path):
+                try:
+                    os.remove(master_hash_path)
+                except Exception as e:
+                    print(f"Error removing primary hash: {e}")
+
+        # Clean existing subdirectory checksum files if requested (leaves root .hash file intact)
         if self.delete_subhashes:
-            root_folder_name = os.path.basename(self.target_dir)
-            master_hash_name = f"{root_folder_name}.hash".lower()
             for root, dirs, files in os.walk(self.target_dir):
                 # Skip root folder to avoid deleting the master hash file
                 if os.path.normpath(root) == self.target_dir:
                     continue
                 for f in files:
-                    if f.lower().endswith(".hash"):
+                    if f.lower().endswith(CHECKSUM_EXTS):
                         try:
                             os.remove(os.path.join(root, f))
                         except Exception as e:
-                            print(f"Error removing subfolder hash {f}: {e}")
+                            print(f"Error removing subfolder checksum file {f}: {e}")
         # 1. Parse existing master .hash file to track previously hashed relative paths
         existing_entries = set()
         root_folder_name = os.path.basename(self.target_dir)
@@ -160,11 +183,11 @@ class HashWorker(QThread):
             except Exception as e:
                 print(f"Error reading existing master hash: {e}")
 
-        # 2. Collect all non-hash files
+        # 2. Collect all non-checksum files
         all_files = []
         for root, dirs, files in os.walk(self.target_dir):
             for f in files:
-                if not f.lower().endswith(".hash"):
+                if not f.lower().endswith(CHECKSUM_EXTS):
                     all_files.append(os.path.join(root, f))
 
         # 3. Read hashes from existing master file so we have the full record available
@@ -198,20 +221,38 @@ class HashWorker(QThread):
             self.progress.emit(idx, total_files, rel_path)
             
             try:
-                if self.algorithm == "BLAKE3":
-                    if HAS_BLAKE3:
-                        hasher = blake3.blake3()
+                if self.algorithm == "SFV / CRC32":
+                    crc_val = 0
+                    with open(file_path, 'rb') as f:
+                        while chunk := f.read(65536):
+                            crc_val = zlib.crc32(chunk, crc_val)
+                    results[rel_path] = f"{crc_val & 0xFFFFFFFF:08x}"
+                else:
+                    if self.algorithm == "BLAKE3":
+                        hasher = blake3.blake3() if HAS_BLAKE3 else hashlib.blake2b()
+                    elif self.algorithm in ("BLAKE2", "BLAKE2b"):
+                        hasher = hashlib.blake2b()
+                    elif self.algorithm == "BLAKE2s":
+                        hasher = hashlib.blake2s()
+                    elif self.algorithm == "SHA-512":
+                        hasher = hashlib.sha512()
+                    elif self.algorithm == "SHA-256":
+                        hasher = hashlib.sha256()
+                    elif self.algorithm == "SHA-3":
+                        hasher = hashlib.sha3_256()
+                    elif self.algorithm == "xx3":
+                        hasher = xxhash.xxh3_64() if HAS_XXHASH else hashlib.blake2b()
+                    elif self.algorithm == "SHA-1":
+                        hasher = hashlib.sha1()
+                    elif self.algorithm == "MD5":
+                        hasher = hashlib.md5()
                     else:
                         hasher = hashlib.blake2b()
-                elif self.algorithm == "BLAKE2b":
-                    hasher = hashlib.blake2b()
-                else:
-                    hasher = hashlib.blake2s()
-                    
-                with open(file_path, 'rb') as f:
-                    while chunk := f.read(65536):
-                        hasher.update(chunk)
-                results[rel_path] = hasher.hexdigest()
+                        
+                    with open(file_path, 'rb') as f:
+                        while chunk := f.read(65536):
+                            hasher.update(chunk)
+                    results[rel_path] = hasher.hexdigest()
             except Exception as e:
                 print(f"Error hashing {file_path}: {e}")
                 
@@ -227,7 +268,27 @@ class HashWorker(QThread):
 
         for hash_file in hash_file_paths:
             base_dir = os.path.dirname(hash_file)
-            algo = "BLAKE3"
+            ext = os.path.splitext(hash_file)[1].lower()
+            if ext in (".sha3", ".sha3-256", ".sha3-512"):
+                current_algo = "SHA-3"
+            elif ext == ".sha256":
+                current_algo = "SHA-256"
+            elif ext == ".sha512":
+                current_algo = "SHA-512"
+            elif ext == ".md5":
+                current_algo = "MD5"
+            elif ext in (".sha1", ".sha"):
+                current_algo = "SHA-1"
+            elif ext in (".sfv", ".crc32", ".crc"):
+                current_algo = "SFV / CRC32"
+            elif ext in (".xx3", ".xxh3", ".xxh"):
+                current_algo = "xx3"
+            elif ext in (".b2", ".blake2", ".blake2b"):
+                current_algo = "BLAKE2b"
+            elif ext == ".blake2s":
+                current_algo = "BLAKE2s"
+            else:
+                current_algo = "BLAKE3"
             
             try:
                 with open(hash_file, 'r', encoding='utf-8') as f:
@@ -236,15 +297,27 @@ class HashWorker(QThread):
                 for line in lines:
                     line_str = line.strip()
                     if line_str.startswith("# algorithm:"):
-                        algo = line_str.split(":", 1)[1].strip()
+                        current_algo = line_str.split(":", 1)[1].strip()
                         continue
-                    if not line_str or line_str.startswith('#'):
+                    if not line_str or line_str.startswith('#') or line_str.startswith(';'):
                         continue
 
-                    parts = line_str.split(maxsplit=1)
-                    if len(parts) == 2:
-                        expected_hash = parts[0].strip()
-                        rel_path = parts[1].lstrip('*').strip()
+                    tokens = line_str.split()
+                    if len(tokens) >= 2:
+                        first_tok = tokens[0].strip()
+                        last_tok = tokens[-1].strip()
+                        is_hex = lambda s: all(c in '0123456789abcdefABCDEF' for c in s)
+
+                        if len(first_tok) in (8, 16, 32, 40, 64, 128) and is_hex(first_tok):
+                            expected_hash = first_tok
+                            rel_path = line_str.split(maxsplit=1)[1].lstrip('*').strip()
+                        elif len(last_tok) == 8 and is_hex(last_tok):
+                            expected_hash = last_tok
+                            rel_path = line_str.rsplit(maxsplit=1)[0].lstrip('*').strip()
+                        else:
+                            expected_hash = first_tok
+                            rel_path = line_str.split(maxsplit=1)[1].lstrip('*').strip()
+
                         full_path = os.path.join(base_dir, rel_path)
 
                         self.verification_progress.emit(rel_path)
@@ -254,21 +327,63 @@ class HashWorker(QThread):
                             verification_results["missing"].append((rel_path, hash_file))
                             continue
 
-                        try:
-                            if algo == "BLAKE3" and HAS_BLAKE3:
-                                hasher = blake3.blake3()
-                            elif algo == "BLAKE2b":
-                                hasher = hashlib.blake2b()
-                            elif algo == "BLAKE2s":
-                                hasher = hashlib.blake2s()
-                            else:
-                                hasher = hashlib.blake2b()
+                        # Resolve effective algorithm using header state & length heuristics
+                        h_len = len(expected_hash)
+                        algo = current_algo
+                        if h_len == 8:
+                            algo = "SFV / CRC32"
+                        elif h_len == 16:
+                            algo = "xx3"
+                        elif h_len == 32:
+                            algo = "MD5"
+                        elif h_len == 40:
+                            algo = "SHA-1"
+                        elif h_len == 64:
+                            # 256-bit digest: keep current_algo if it is a 256-bit engine, otherwise default to BLAKE3
+                            algo_u = current_algo.upper()
+                            if not any(k in algo_u for k in ["BLAKE3", "256", "BLAKE2S", "SHA-3", "SHA3"]):
+                                algo = "BLAKE3"
+                        elif h_len == 128:
+                            # 512-bit digest: keep current_algo if it is a 512-bit engine, otherwise default to BLAKE2b
+                            algo_u = current_algo.upper()
+                            if not any(k in algo_u for k in ["BLAKE2", "512"]):
+                                algo = "BLAKE2b"
 
-                            with open(full_path, 'rb') as vf:
-                                while chunk := vf.read(65536):
-                                    hasher.update(chunk)
-                            
-                            calculated_hash = hasher.hexdigest()
+                        try:
+                            algo_upper = algo.upper()
+                            if "CRC" in algo_upper or "SFV" in algo_upper:
+                                crc_val = 0
+                                with open(full_path, 'rb') as vf:
+                                    while chunk := vf.read(65536):
+                                        crc_val = zlib.crc32(chunk, crc_val)
+                                calculated_hash = f"{crc_val & 0xFFFFFFFF:08x}"
+                            else:
+                                if "BLAKE3" in algo_upper and HAS_BLAKE3:
+                                    hasher = blake3.blake3()
+                                elif "BLAKE2S" in algo_upper:
+                                    hasher = hashlib.blake2s()
+                                elif "BLAKE2" in algo_upper:
+                                    hasher = hashlib.blake2b()
+                                elif "512" in algo_upper and "SHA" in algo_upper:
+                                    hasher = hashlib.sha512()
+                                elif "SHA-3" in algo_upper or "SHA3" in algo_upper:
+                                    hasher = hashlib.sha3_256()
+                                elif "256" in algo_upper and "SHA" in algo_upper:
+                                    hasher = hashlib.sha256()
+                                elif ("XX3" in algo_upper or "XXH3" in algo_upper) and HAS_XXHASH:
+                                    hasher = xxhash.xxh3_64()
+                                elif "SHA-1" in algo_upper or "SHA1" in algo_upper:
+                                    hasher = hashlib.sha1()
+                                elif "MD5" in algo_upper:
+                                    hasher = hashlib.md5()
+                                else:
+                                    hasher = hashlib.blake2b()
+
+                                with open(full_path, 'rb') as vf:
+                                    while chunk := vf.read(65536):
+                                        hasher.update(chunk)
+                                calculated_hash = hasher.hexdigest()
+
                             if calculated_hash.lower() == expected_hash.lower():
                                 verification_results["passed"] += 1
                             else:
@@ -364,6 +479,38 @@ class VerificationOSD(QWidget):
         self.lbl_file.setText("KryptDist | CORRUPTION DETECTED!")
 
 
+class DropListWidget(QListWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                file_path = os.path.normpath(url.toLocalFile()).replace('/', os.sep)
+                if file_path and os.path.exists(file_path):
+                    if file_path.lower().endswith(CHECKSUM_EXTS):
+                        continue
+                    existing = [self.item(i).text() for i in range(self.count())]
+                    if file_path not in existing:
+                        self.addItem(file_path)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+
 class KryptDistApp(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -401,8 +548,8 @@ class KryptDistApp(QMainWindow):
         self.init_ui()
         self.load_saved_settings()
 
-        # Check if any .hash files were passed via arguments
-        self.hash_files_passed = [p for p in self.target_paths if p.lower().endswith(".hash")]
+        # Check if any checksum files were passed via arguments (e.g. SendTo)
+        self.hash_files_passed = [p for p in self.target_paths if p.lower().endswith(CHECKSUM_EXTS)]
         if self.hash_files_passed:
             self.start_direct_verification(self.hash_files_passed)
 
@@ -412,11 +559,9 @@ class KryptDistApp(QMainWindow):
         
         # Target Paths List
         layout.addWidget(QLabel("Target Files & Folders:"))
-        self.path_list = QListWidget()
+        self.path_list = DropListWidget()
         if self.target_paths:
             self.path_list.addItems(self.target_paths)
-        elif self.last_directory and os.path.exists(self.last_directory):
-            self.path_list.addItem(self.last_directory)
         layout.addWidget(self.path_list)
 
         # Path Control Buttons
@@ -442,26 +587,52 @@ class KryptDistApp(QMainWindow):
         algo_layout = QHBoxLayout()
         algo_label = QLabel("Hash Algorithm:")
         self.combo_algo = QComboBox()
-        self.combo_algo.addItems(["BLAKE3", "BLAKE2b", "BLAKE2s"])
+        
+        algo_items = [
+            ("Cryptographic Algorithms", False),
+            ("BLAKE3", True),
+            ("BLAKE2", True),
+            ("SHA-512", True),
+            ("SHA-256", True),
+            ("SHA-3", True),
+            ("Fast Checksum / Legacy Algorithms", False),
+            ("xx3", True),
+            ("SHA-1", True),
+            ("MD5", True),
+            ("SFV / CRC32", True)
+        ]
+        for text, enabled in algo_items:
+            self.combo_algo.addItem(text)
+            if not enabled:
+                item_model = self.combo_algo.model().item(self.combo_algo.count() - 1)
+                item_model.setEnabled(False)
+
+        self.combo_algo.setCurrentText("BLAKE3")
         algo_layout.addWidget(algo_label)
         algo_layout.addWidget(self.combo_algo)
         layout.addLayout(algo_layout)
         
         # Options
-        self.check_single_hash_only = QCheckBox("Single Hash Only")
-        self.check_single_hash_only.setToolTip("Only creates the root .hash file. Disables subdirectory hash creation and cleanup options.")
-        self.check_single_hash_only.toggled.connect(self.toggle_single_hash_only)
-        layout.addWidget(self.check_single_hash_only, alignment=Qt.AlignmentFlag.AlignLeft)
+        options_row1 = QHBoxLayout()
+        self.lbl_mode = QLabel("Mode: MultiHash")
+        self.lbl_mode.setStyleSheet("font-weight: bold; color: #007acc;")
+        options_row1.addWidget(self.lbl_mode)
 
-        options_layout = QHBoxLayout()
+        self.check_delete_primary = QCheckBox("Delete Primary Hashes First")
+        self.check_delete_primary.setToolTip("Removes existing root master .hash file before scanning and hashing.")
+        options_row1.addWidget(self.check_delete_primary)
+        layout.addLayout(options_row1)
+
+        options_row2 = QHBoxLayout()
         self.check_subfolders = QCheckBox("Distribute Hashes to Subdirectories")
         self.check_subfolders.setToolTip("Creates individual .hash files inside subdirectories in addition to the root .hash file.")
-        options_layout.addWidget(self.check_subfolders)
+        self.check_subfolders.toggled.connect(self.update_mode_indicator)
+        options_row2.addWidget(self.check_subfolders)
 
         self.check_delete_subhashes = QCheckBox("Delete Existing Subdirectory Hashes First")
         self.check_delete_subhashes.setToolTip("Removes all existing .hash files in subdirectories before scanning and hashing.")
-        options_layout.addWidget(self.check_delete_subhashes)
-        layout.addLayout(options_layout)
+        options_row2.addWidget(self.check_delete_subhashes)
+        layout.addLayout(options_row2)
 
         # Progress Section
         self.status_label = QLabel("Status: Ready")
@@ -483,6 +654,7 @@ class KryptDistApp(QMainWindow):
     def load_saved_settings(self):
         if os.path.exists(self.config_file):
             try:
+                self.check_delete_primary.setChecked(self.settings.value("delete_primary_hash", False))
                 self.check_subfolders.setChecked(self.settings.value("distribute_subfolders", True))
                 self.check_delete_subhashes.setChecked(self.settings.value("delete_subhashes", False))
                 saved_algo = self.settings.value("algorithm", "BLAKE3")
@@ -491,6 +663,7 @@ class KryptDistApp(QMainWindow):
                     self.combo_algo.setCurrentIndex(idx)
             except Exception as e:
                 print(f"Error loading saved settings: {e}")
+        self.update_mode_indicator()
 
     def load_geometry(self):
         self.resize(*self.default_size)
@@ -520,6 +693,7 @@ class KryptDistApp(QMainWindow):
         self.settings.setValue("y", pos.y())
         self.settings.setValue("width", self.width())
         self.settings.setValue("height", self.height())
+        self.settings.setValue("delete_primary_hash", self.check_delete_primary.isChecked())
         self.settings.setValue("distribute_subfolders", self.check_subfolders.isChecked())
         self.settings.setValue("delete_subhashes", self.check_delete_subhashes.isChecked())
         self.settings.setValue("algorithm", self.combo_algo.currentText())
@@ -544,7 +718,7 @@ class KryptDistApp(QMainWindow):
             existing = [self.path_list.item(i).text() for i in range(self.path_list.count())]
             for f in files:
                 clean_p = os.path.normpath(f).replace('/', os.sep)
-                if clean_p not in existing:
+                if not clean_p.lower().endswith(CHECKSUM_EXTS) and clean_p not in existing:
                     self.path_list.addItem(clean_p)
 
     def remove_selected_path(self):
@@ -554,15 +728,12 @@ class KryptDistApp(QMainWindow):
     def clear_paths(self):
         self.path_list.clear()
 
-    def toggle_single_hash_only(self, checked):
-        if checked:
-            self.check_subfolders.setChecked(False)
-            self.check_subfolders.setEnabled(False)
-            self.check_delete_subhashes.setChecked(False)
-            self.check_delete_subhashes.setEnabled(False)
-        else:
-            self.check_subfolders.setEnabled(True)
-            self.check_delete_subhashes.setEnabled(True)
+    def update_mode_indicator(self):
+        if hasattr(self, 'check_subfolders') and hasattr(self, 'lbl_mode'):
+            if self.check_subfolders.isChecked():
+                self.lbl_mode.setText("Mode: MultiHash")
+            else:
+                self.lbl_mode.setText("Mode: Primary Hash Only")
 
     def create_menu(self):
         menu_bar = self.menuBar()
@@ -790,9 +961,10 @@ class KryptDistApp(QMainWindow):
         algo = self.combo_algo.currentText()
         distribute = self.check_subfolders.isChecked()
         delete_sub = self.check_delete_subhashes.isChecked()
+        delete_primary = self.check_delete_primary.isChecked()
         
         target_dir = targets[0] if targets else self.last_directory
-        self.worker = HashWorker(target_dir, algo, distribute, delete_sub)
+        self.worker = HashWorker(target_dir, algo, distribute, delete_sub, delete_primary)
         self.worker.progress.connect(self.update_progress)
         self.worker.finished.connect(self.generation_complete)
         self.worker.start()
@@ -811,14 +983,17 @@ class KryptDistApp(QMainWindow):
         
         header = f"# checksum file generated with KryptDist v{APP_VERSION}\n# algorithm: {algo}\n\n"
         
-        # Parse existing master entries to avoid redundant appends
+        # Parse existing master entries and detect last declared algorithm
         existing_master = {}
+        last_master_algo = None
         if os.path.exists(master_hash_path):
             try:
                 with open(master_hash_path, 'r', encoding='utf-8') as f:
                     for line in f:
                         line = line.strip()
-                        if line and not line.startswith('#'):
+                        if line.startswith('# algorithm:'):
+                            last_master_algo = line.split(':', 1)[1].strip()
+                        elif line and not line.startswith('#'):
                             parts = line.split(maxsplit=1)
                             if len(parts) == 2:
                                 existing_master[os.path.normpath(parts[1].lstrip('*').strip())] = parts[0].strip()
@@ -835,6 +1010,9 @@ class KryptDistApp(QMainWindow):
                 with open(master_hash_path, 'a' if file_exists else 'w', encoding='utf-8') as f:
                     if not file_exists:
                         f.write(header)
+                    else:
+                        if last_master_algo != algo:
+                            f.write(f"\n# algorithm: {algo}\n")
                     for rel_path, file_hash in new_master_entries.items():
                         f.write(f"{file_hash} *{rel_path}\n")
             except Exception as e:
@@ -845,9 +1023,10 @@ class KryptDistApp(QMainWindow):
         if self.check_subfolders.isChecked():
             subfolder_hashes = {}
             for rel_path, file_hash in results.items():
-                parts = rel_path.split(os.sep)
+                norm_rel = os.path.normpath(rel_path)
+                parts = norm_rel.split(os.sep)
                 if len(parts) > 1:
-                    sub_dir = os.path.join(self.last_directory, *parts[:-1])
+                    sub_dir = os.path.join(target_dir, *parts[:-1])
                     sub_rel_path = parts[-1]
                     subfolder_hashes.setdefault(sub_dir, []).append((file_hash, sub_rel_path))
 
@@ -855,14 +1034,17 @@ class KryptDistApp(QMainWindow):
                 sub_folder_name = os.path.basename(sub_dir)
                 sub_hash_path = os.path.join(sub_dir, f"{sub_folder_name}.hash")
                 
-                # Parse existing entries in subfolder hash file to avoid duplicates
+                # Parse existing entries and detect last declared algorithm in subfolder hash file
                 existing_sub_entries = set()
+                last_sub_algo = None
                 if os.path.exists(sub_hash_path):
                     try:
                         with open(sub_hash_path, 'r', encoding='utf-8') as f:
                             for line in f:
                                 line = line.strip()
-                                if line and not line.startswith('#'):
+                                if line.startswith('# algorithm:'):
+                                    last_sub_algo = line.split(':', 1)[1].strip()
+                                elif line and not line.startswith('#'):
                                     parts = line.split(maxsplit=1)
                                     if len(parts) == 2:
                                         existing_sub_entries.add(os.path.normpath(parts[1].lstrip('*').strip()))
@@ -881,13 +1063,22 @@ class KryptDistApp(QMainWindow):
                         with open(sub_hash_path, 'a' if sub_file_exists else 'w', encoding='utf-8') as f:
                             if not sub_file_exists:
                                 f.write(header)
+                            else:
+                                if last_sub_algo != algo:
+                                    f.write(f"\n# algorithm: {algo}\n")
                             for file_hash, sub_rel_path in new_sub_entries:
                                 f.write(f"{file_hash} *{sub_rel_path}\n")
                     except Exception as e:
                         print(f"Error writing subfolder hash for {sub_dir}: {e}")
 
-        self.status_label.setText("Status: Complete!")
-        QMessageBox.information(self, "Complete", f"Successfully generated checksums for {len(results)} files.")
+        if not new_master_entries:
+            self.status_label.setText("Status: No new files.")
+            QMessageBox.information(self, "Complete", "No new files. No checksums generated.")
+        else:
+            self.status_label.setText("Status: Complete!")
+            count = len(new_master_entries)
+            file_word = "file" if count == 1 else "files"
+            QMessageBox.information(self, "Complete", f"Successfully generated checksums for {count} {file_word}.")
 
 
 if __name__ == "__main__":
