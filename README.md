@@ -17,9 +17,10 @@ Key operational features include:
 3. **Smart Incremental Caching:** Automatically parses pre-existing primary and subdirectory hash files, skipping previously verified files and appending only newly detected files to conserve time and disk I/O.
 4. **Pre-Generation Hash Cleaning:** Optional pre-execution controls allow automatically purging prior primary hash files, existing subdirectory hashes, or both before beginning a fresh hash pass.
 5. **Real-Time Verification OSD:** Passing checksum files via the command line, drag-and-drop, or the Windows **SendTo** menu triggers an instant verification pass monitored by a compact, draggable On-Screen Display widget with persistent screen positioning.
-6. **Automated Error Logging:** Detects hash mismatches, corrupted files, and missing assets during verification. Triggers a visual alert and compiles an error log report in `KryptDist_internal/logs/`, opening it automatically on Windows systems.
-7. **Drag & Drop Target Management:** Easily queue files and folders through an interactive drop target list with path controls for directory browsing, file selection, and individual item removal.
-8. **Persistent UI State & Theming:** Remembers window geometry, OSD screen coordinates, algorithm choices, processing options, and user-selected Dark, Light, or System-synced UI palettes.
+6. **Headless CLI & Single-File Verification:** Features direct command-line arguments (`-v` / `--verify-file`) to verify individual files against local or parent hash containers headlessly with zero GUI overhead, returning standard process exit codes (`0` for intact, `2` for mismatch/missing) for integration with managers such as HashMan.
+7. **Automated Error Logging:** Detects hash mismatches, corrupted files, and missing assets during verification. Triggers a visual alert and compiles an error log report in `KryptDist_internal/logs/`, opening it automatically on Windows systems.
+8. **Drag & Drop Target Management:** Easily queue files and folders through an interactive drop target list with path controls for directory browsing, file selection, and individual item removal.
+9. **Persistent UI State & Theming:** Remembers window geometry, OSD screen coordinates, algorithm choices, processing options, and user-selected Dark, Light, or System-synced UI palettes.
 
 ---
 
@@ -33,8 +34,26 @@ Key operational features include:
 | **Delete Primary Hashes First** | Automatically deletes existing root `.hash` files before scanning and calculating new digests. |
 | **Delete Subdirectory Hashes First** | Traverses nested subfolders to remove existing checksum files while leaving primary hashes intact. |
 | **Verification OSD** | A lightweight, frameless status overlay providing live feedback during file verification passes. |
+| **Headless CLI Verification** | Verifies individual line items via `-v <file>` without initializing the GUI, returning standard exit codes (`0` or `2`). |
 | **Automated Log Reports** | Compiles detailed mismatch and missing-file records to `KryptDist_internal/logs/` upon verification failure. |
 | **Theme Engine** | Full support for Dark, Light, and System-synced palettes via a customized `QPalette` implementation. |
+
+---
+
+## Command Line Usage
+
+### Headless Single-File Verification
+```text
+python.exe KryptDist.py -v "path/to/target_file.mkv"
+python.exe KryptDist.py --verify-file "target_file.mkv" --hash-file "custom_name.hash"
+```
+* **Exit Code `0`:** Checksum verified successfully.
+* **Exit Code `2`:** Checksum mismatch, missing file, or invalid entry.
+
+### Container Verification (OSD Mode)
+```text
+python.exe KryptDist.py "path/to/folder.hash"
+```
 
 ---
 
@@ -67,4 +86,4 @@ This software is released under the **GNU General Public License v3**.
 ---
 > **Document Control**<br>
 > *This document is up-to-date with the following version of KryptDist™.*<br>
-> *2026.09.08__12.35.57*
+> *2026.09.08__14.44.10*
