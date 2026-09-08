@@ -1,6 +1,6 @@
 # ==============================================================================
 # SCRIPT: KryptDist.py
-# VERSION: 2026.09.08__11.42.00
+# VERSION: 2026.09.08__12.35.57
 # TARGET: Python 3.14.5
 #
 # Copyright (C) 2026 pwshAgyjkcrg761
@@ -101,7 +101,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt6.QtGui import QActionGroup, QPalette, QColor, QIcon
 import ctypes
 
-APP_VERSION = "2026.09.08__11.42.00"
+APP_VERSION = "2026.09.08__12.35.57"
 CHECKSUM_EXTS = (
     ".hash", ".b3", ".blake3", ".b2", ".blake2", ".blake2b", ".blake2s",
     ".sha512", ".sha256", ".sha3", ".sha3-256", ".sha3-512",
@@ -521,7 +521,7 @@ class KryptDistApp(QMainWindow):
         os.makedirs(internal_dir, exist_ok=True)
         self.config_file = os.path.join(internal_dir, "KryptDist.config.json")
         
-        icon_path = os.path.join(internal_dir, "KryptDist_icon", "KryptDist-icon.svg")
+        icon_path = os.path.join(internal_dir, "icons", "KryptDist_ghost_icon.svg")
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
             
@@ -833,17 +833,37 @@ class KryptDistApp(QMainWindow):
 
         manual_text = (
             f"<h1>KryptDist v{APP_VERSION}</h1>"
-            f"<p>USAGE GUIDE | Copyright (C) 2026 pwshAgyjkcrg761</p><br>"
+            f"<p>MANUAL &amp; USAGE GUIDE | Copyright (C) 2026 pwshAgyjkcrg761</p><br>"
             f"<h2>OVERVIEW</h2>"
-            f"<p>KryptDist generates and verifies multi-tier checksum file sets across directories and subdirectories in Corz-compatible formatting.</p>"
-            f"<h2>HASH ENGINES</h2>"
+            f"<p>KryptDist is a high-performance checksum generator and integrity verifier designed to produce "
+            f"primary and distributed subdirectory checksum sets (<code>.hash</code>).</p>"
+            f"<h2>OPERATIONAL MODES</h2>"
             f"<ul>"
-            f"<li><b>BLAKE3:</b> Ultra-fast multi-threaded cryptographic hash.</li>"
-            f"<li><b>BLAKE2b / BLAKE2s:</b> Standard cryptographic hashes natively supported in Python.</li>"
+            f"<li><b>MultiHash Mode:</b> Generates both a root primary <code>.hash</code> file and individual "
+            f"subdirectory hashes within every subfolder in a single scanning pass.</li>"
+            f"<li><b>Primary Hash Only Mode:</b> Generates only the root directory's primary <code>.hash</code> file.</li>"
             f"</ul>"
-            f"<h2>WORKFLOW</h2>"
-            f"<p>Select your root directory, choose your algorithm, and click <b>Generate Hashes</b>. "
-            f"KryptDist reads files in a single pass to create a master <code>.hash</code> file and optional distributed subdirectory hashes.</p>"
+            f"<h2>HASHING OPTIONS</h2>"
+            f"<ul>"
+            f"<li><b>Incremental Smart Hashing:</b> KryptDist scans existing primary hash files and skips already verified files, "
+            f"only hashing new files and appending them to the hash files.</li>"
+            f"<li><b>Delete Primary Hashes First:</b> Deletes any existing root primary <code>.hash</code> file before generating new checksums.</li>"
+            f"<li><b>Delete Subdirectory Hashes First:</b> Cleans out existing subhashes across all subfolders prior to generation.</li>"
+            f"</ul>"
+            f"<h2>SUPPORTED ALGORITHMS</h2>"
+            f"<ul>"
+            f"<li><b>Cryptographic:</b> BLAKE3, BLAKE2 (2b/2s), SHA-512, SHA-256, SHA-3 (SHA3-256).</li>"
+            f"<li><b>Fast Checksum & Legacy:</b> xx3 (xxHash3), SHA-1, MD5, SFV / CRC32.</li>"
+            f"</ul>"
+            f"<h2>VERIFICATION & OSD</h2>"
+            f"<p>Pass checksum files via command line or Windows <b>SendTo</b> menu to trigger instant verification. "
+            f"A lightweight On-Screen Display (OSD) provides real-time progress. If missing or corrupted files are detected, "
+            f"the OSD alerts in red and a detailed log is saved to <code>KryptDist_internal/logs/</code>.</p>"
+            f"<h2>INTERFACE & SHORTCUTS</h2>"
+            f"<ul>"
+            f"<li><b>Drag & Drop:</b> Drag files or directories directly into the target list.</li>"
+            f"<li><b>Themes:</b> Switch between Dark, Light, and System themes via the <b>Tools &gt; Themes</b> menu.</li>"
+            f"</ul>"
         )
 
         text_browser.setHtml(manual_text)
@@ -877,11 +897,15 @@ class KryptDistApp(QMainWindow):
         """)
         
         about_text = (
-            f"<h1>KryptDist v{APP_VERSION}</h1>"
+            f"<h1><a href=\"https://git.disroot.org/pwshAgyjkcrg761/KryptDist-py\">KryptDist</a> v{APP_VERSION}</h1>"
             "<p>Copyright (C) 2026 <b>pwshAgyjkcrg761</b><br>"
             "Licensed under <b>GPLv3</b></p>"
-            "<p>A high-performance checksum generator and distributor supporting BLAKE2, BLAKE3, and Corz-compatible file sidecars.</p>"
+            "<p>A high-performance checksum generator and distributor supporting BLAKE2, BLAKE3, and primary and subdirectory hashes.</p>"
             "<p>Official License: <a href=\"https://www.gnu.org/licenses/gpl-3.0.html\">gnu.org/licenses/gpl-3.0.html</a></p>"
+            "<hr>"
+            "<p>Icon Credits:<br>"
+            "'Ghost SVG Vector' by <a href=\"https://www.svgrepo.com/svg/54269/ghost\">SVGRepo</a>.<br>"
+            "Used under CC0 License. Modified by pwshAgyjkcrg761.</p>"
         )
         text_browser.setHtml(about_text)
         layout.addWidget(text_browser)
