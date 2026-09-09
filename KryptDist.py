@@ -1,6 +1,6 @@
 # ==============================================================================
 # SCRIPT: KryptDist.py
-# VERSION: 2026.09.09__10.20.31
+# VERSION: 2026.09.09__12.50.46
 # TARGET: Python 3.14.5
 #
 # Copyright (C) 2026 pwshAgyjkcrg761
@@ -73,7 +73,7 @@ import re
 import ctypes
 import ctypes.wintypes
 
-APP_VERSION = "2026.09.09__10.20.31"
+APP_VERSION = "2026.09.09__12.50.46"
 
 def natural_sort_key(s):
     """Sort strings containing numbers in human/natural order safely across types."""
@@ -141,8 +141,38 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QComboBox, QProgressBar, QHBoxLayout, QListWidget,
                              QTabWidget, QLineEdit, QFormLayout, QTreeWidget,
                              QTreeWidgetItem)
-from PyQt6.QtGui import QActionGroup, QPalette, QColor, QIcon
+from PyQt6.QtGui import QActionGroup, QPalette, QColor, QIcon, QPixmap, QPainter, QPen
 import ctypes
+
+def get_status_pixmap(status="success", size=48):
+    """Draws a crisp green checkmark or red X badge for dialog message boxes."""
+    pixmap = QPixmap(size, size)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+    if status == "success":
+        painter.setBrush(QColor("#28a745"))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(2, 2, size - 4, size - 4)
+
+        pen = QPen(QColor("#ffffff"), 4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        painter.drawLine(int(size * 0.28), int(size * 0.52), int(size * 0.44), int(size * 0.68))
+        painter.drawLine(int(size * 0.44), int(size * 0.68), int(size * 0.72), int(size * 0.34))
+    else:
+        painter.setBrush(QColor("#dc3545"))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawEllipse(2, 2, size - 4, size - 4)
+
+        pen = QPen(QColor("#ffffff"), 4, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin)
+        painter.setPen(pen)
+        margin = int(size * 0.30)
+        painter.drawLine(margin, margin, size - margin, size - margin)
+        painter.drawLine(size - margin, margin, margin, size - margin)
+
+    painter.end()
+    return pixmap
 
 
 CHECKSUM_EXTS = (
@@ -321,7 +351,7 @@ class PreferencesDialog(QDialog):
         main_layout = QVBoxLayout(self)
         self.tabs = QTabWidget()
 
-        # Tab: File Extensions to Ignore
+        # Tab 1: File Extensions to Ignore
         ignore_tab = QWidget()
         ignore_layout = QVBoxLayout(ignore_tab)
 
@@ -353,6 +383,16 @@ class PreferencesDialog(QDialog):
         ignore_layout.addStretch()
 
         self.tabs.addTab(ignore_tab, "File Extensions to Ignore")
+
+        # Tab 2: Options
+        options_tab = QWidget()
+        options_layout = QVBoxLayout(options_tab)
+        self.chk_disable_sound = QCheckBox("Disable Notification Sounds")
+        self.chk_disable_sound.setToolTip("Mutes all audio chimes and notification sounds for completion alerts.")
+        options_layout.addWidget(self.chk_disable_sound)
+        options_layout.addStretch()
+
+        self.tabs.addTab(options_tab, "Options")
         main_layout.addWidget(self.tabs)
 
         # Dialog Buttons
@@ -369,6 +409,7 @@ class PreferencesDialog(QDialog):
             self.txt_ignore_types.setText(s.value("ignore_types", DEFAULT_IGNORE_TYPES))
             self.txt_ignore_files.setText(s.value("ignore_files", DEFAULT_IGNORE_FILES))
             self.txt_ignore_folders.setText(s.value("ignore_folders", DEFAULT_IGNORE_FOLDERS))
+            self.chk_disable_sound.setChecked(s.value("disable_notification_sounds", False))
 
     def restore_defaults(self):
         self.txt_ignore_types.setText(DEFAULT_IGNORE_TYPES)
@@ -381,6 +422,7 @@ class PreferencesDialog(QDialog):
             s.setValue("ignore_types", self.txt_ignore_types.text().strip())
             s.setValue("ignore_files", self.txt_ignore_files.text().strip())
             s.setValue("ignore_folders", self.txt_ignore_folders.text().strip())
+            s.setValue("disable_notification_sounds", self.chk_disable_sound.isChecked())
         self.accept()
 
 
@@ -405,6 +447,10 @@ class HashWorker(QThread):
         self.ignore_types = ignore_types
         self.ignore_files = ignore_files
         self.ignore_folders = ignore_folders
+        self._is_cancelled = False
+
+    def cancel(self):
+        self._is_cancelled = True
         
     def run(self):
         all_targets_data = {}
@@ -491,6 +537,8 @@ class HashWorker(QThread):
         total_files = len(total_files_to_hash)
 
         for idx, (target_dir, file_path, rel_path) in enumerate(total_files_to_hash, 1):
+            if self._is_cancelled:
+                return
             self.progress.emit(idx, total_files, file_path)
 
             try:
@@ -697,23 +745,56 @@ class VerificationOSD(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         
-        layout = QVBoxLayout()
+        layout = QHBoxLayout()
         layout.setContentsMargins(8, 4, 8, 4)
+        layout.setSpacing(6)
+
+        script_dir = os.path.dirname(os.path.realpath(__file__))
+        icon_path = os.path.join(script_dir, "KryptDist_internal", "icons", "KryptDist_ghost_icon.svg")
+        if os.path.exists(icon_path):
+            lbl_icon = QLabel()
+            lbl_icon.setStyleSheet("background: transparent; border: none; padding: 0px;")
+            pixmap = QIcon(icon_path).pixmap(16, 16)
+            lbl_icon.setPixmap(pixmap)
+            lbl_icon.setFixedSize(16, 16)
+            layout.addWidget(lbl_icon)
         
+        theme = "System"
+        if self.parent_app and hasattr(self.parent_app, 'current_theme'):
+            theme = self.parent_app.current_theme
+        elif self.parent_app and hasattr(self.parent_app, 'settings'):
+            theme = self.parent_app.settings.value("theme", "System")
+
+        if theme == "System":
+            app = QApplication.instance()
+            is_dark = app.style().standardPalette().color(QPalette.ColorRole.Window).lightness() < 128 if app else True
+            effective_theme = "Dark" if is_dark else "Light"
+        else:
+            effective_theme = theme
+
+        if effective_theme == "Light":
+            bg_color = "#f0f0f0"
+            border_color = "#0078d7"
+            text_color = "#000000"
+        else:
+            bg_color = "#1e1e1e"
+            border_color = "#007acc"
+            text_color = "#ffffff"
+
         self.lbl_file = QLabel("Initializing...")
-        self.lbl_file.setStyleSheet("font-size: 11px; color: #ffffff;")
+        self.lbl_file.setStyleSheet(f"font-size: 11px; color: {text_color};")
         self.lbl_file.setFixedWidth(380)
         self.lbl_file.setWordWrap(False)
         layout.addWidget(self.lbl_file)
         
         self.setLayout(layout)
-        self.setStyleSheet("""
-            QWidget {
-                background-color: #1e1e1e;
-                border: 2px solid #007acc;
+        self.setStyleSheet(f"""
+            QWidget {{
+                background-color: {bg_color};
+                border: 2px solid {border_color};
                 border-radius: 4px;
                 padding: 2px;
-            }
+            }}
         """)
         self.adjustSize()
         
@@ -832,7 +913,7 @@ class DropTreeWidget(QTreeWidget):
 
         path_label = QLabel(clean_p)
         path_label.setWordWrap(True)
-        path_label.setStyleSheet("color: palette(text); background: transparent;")
+        path_label.setStyleSheet("background: transparent;")
         self.setItemWidget(child_item, 0, path_label)
 
 
@@ -905,21 +986,21 @@ class KryptDistApp(QMainWindow):
 
         # Path Control Buttons
         btn_layout = QHBoxLayout()
-        btn_add_dir = QPushButton("Add Folder")
-        btn_add_dir.clicked.connect(self.add_directory)
-        btn_layout.addWidget(btn_add_dir)
+        self.btn_add_dir = QPushButton("Add Folder")
+        self.btn_add_dir.clicked.connect(self.add_directory)
+        btn_layout.addWidget(self.btn_add_dir)
 
-        btn_add_files = QPushButton("Add Files")
-        btn_add_files.clicked.connect(self.add_files)
-        btn_layout.addWidget(btn_add_files)
+        self.btn_add_files = QPushButton("Add Files")
+        self.btn_add_files.clicked.connect(self.add_files)
+        btn_layout.addWidget(self.btn_add_files)
 
-        btn_remove = QPushButton("Remove Selected")
-        btn_remove.clicked.connect(self.remove_selected_path)
-        btn_layout.addWidget(btn_remove)
+        self.btn_remove = QPushButton("Remove Selected")
+        self.btn_remove.clicked.connect(self.remove_selected_path)
+        btn_layout.addWidget(self.btn_remove)
 
-        btn_clear = QPushButton("Clear")
-        btn_clear.clicked.connect(self.clear_paths)
-        btn_layout.addWidget(btn_clear)
+        self.btn_clear = QPushButton("Clear")
+        self.btn_clear.clicked.connect(self.clear_paths)
+        btn_layout.addWidget(self.btn_clear)
         layout.addLayout(btn_layout)
         
         # Algorithm Configuration
@@ -988,7 +1069,7 @@ class KryptDistApp(QMainWindow):
         self.status_path_label.setWordWrap(True)
         self.status_path_label.setMinimumHeight(36)
         self.status_path_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        self.status_path_label.setStyleSheet("color: palette(text); background: transparent;")
+        self.status_path_label.setStyleSheet("background: transparent;")
         self.status_tree.setItemWidget(self.status_tree_path, 0, self.status_path_label)
         layout.addWidget(self.status_tree)
         
@@ -997,9 +1078,9 @@ class KryptDistApp(QMainWindow):
         layout.addWidget(self.progress_bar)
 
         # Action Buttons
-        btn_run = QPushButton("Generate Hashes")
-        btn_run.clicked.connect(self.run_generation)
-        layout.addWidget(btn_run)
+        self.btn_run = QPushButton("Generate Hashes")
+        self.btn_run.clicked.connect(self.handle_run_or_cancel)
+        layout.addWidget(self.btn_run)
         
         container = QWidget()
         container.setLayout(layout)
@@ -1157,9 +1238,17 @@ class KryptDistApp(QMainWindow):
     def apply_theme(self, theme_name):
         app = QApplication.instance()
         app.setStyle("Fusion")
-        palette = QPalette()
         
-        if theme_name == "Dark":
+        if theme_name == "System":
+            is_dark = app.style().standardPalette().color(QPalette.ColorRole.Window).lightness() < 128
+            effective_theme = "Dark" if is_dark else "Light"
+        else:
+            effective_theme = theme_name
+
+        palette = QPalette(app.style().standardPalette())
+        
+        if effective_theme == "Dark":
+            text_color = "#ffffff"
             palette.setColor(QPalette.ColorRole.Window, QColor("#1e1e1e"))
             palette.setColor(QPalette.ColorRole.WindowText, QColor("#ffffff"))
             palette.setColor(QPalette.ColorRole.Base, QColor("#2d2d2d"))
@@ -1172,7 +1261,8 @@ class KryptDistApp(QMainWindow):
             palette.setColor(QPalette.ColorRole.PlaceholderText, QColor("#aaaaaa"))
             palette.setColor(QPalette.ColorRole.Highlight, QColor("#007acc"))
             palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
-        elif theme_name == "Light":
+        else:
+            text_color = "#000000"
             palette.setColor(QPalette.ColorRole.Window, QColor("#f0f0f0"))
             palette.setColor(QPalette.ColorRole.WindowText, QColor("#000000"))
             palette.setColor(QPalette.ColorRole.Base, QColor("#ffffff"))
@@ -1185,12 +1275,9 @@ class KryptDistApp(QMainWindow):
             palette.setColor(QPalette.ColorRole.PlaceholderText, QColor("#777777"))
             palette.setColor(QPalette.ColorRole.Highlight, QColor("#0078d7"))
             palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
-        else:
-            is_dark = app.style().standardPalette().color(QPalette.ColorRole.Window).lightness() < 128
-            self.apply_theme("Dark" if is_dark else "Light")
-            return
             
         app.setPalette(palette)
+        app.setStyleSheet(f"QTreeWidget QLabel {{ color: {text_color}; background: transparent; }}")
 
     def change_theme(self, theme_name):
         self.current_theme = theme_name
@@ -1199,7 +1286,13 @@ class KryptDistApp(QMainWindow):
     def show_manual(self):
         dialog = QDialog(self)
         dialog.setWindowTitle("Manual")
-        dialog.resize(650, 520)
+        dialog.resize(650, 540)
+
+        script_dir = os.path.dirname(os.path.realpath(__file__))
+        icon_path = os.path.join(script_dir, "KryptDist_internal", "icons", "KryptDist_ghost_icon.svg")
+        if os.path.exists(icon_path):
+            dialog.setWindowIcon(QIcon(icon_path))
+
         layout = QVBoxLayout(dialog)
 
         text_browser = QTextBrowser()
@@ -1233,6 +1326,8 @@ class KryptDistApp(QMainWindow):
             f"<li><b>Primary Hash Only Mode:</b> Generates only the root directory's primary <code>.hash</code> file.</li>"
             f"<li><b>Batch Processing:</b> Add multiple folders and files simultaneously via Drag &amp; Drop or Windows <b>SendTo</b>. "
             f"KryptDist processes every root target independently in a single, unified queue.</li>"
+            f"<li><b>Execution Control:</b> While generating hashes, the execution button transforms into a <b>Cancel</b> button "
+            f"with confirmation, and input controls/options are safely locked until completion or cancellation.</li>"
             f"</ul>"
             f"<h2>HASHING OPTIONS</h2>"
             f"<ul>"
@@ -1241,9 +1336,10 @@ class KryptDistApp(QMainWindow):
             f"<li><b>Delete Primary Hashes First:</b> Deletes any existing root primary <code>.hash</code> file before generating new checksums.</li>"
             f"<li><b>Delete Subdirectory Hashes First:</b> Cleans out existing subhashes across all subfolders prior to generation.</li>"
             f"</ul>"
-            f"<h2>PREFERENCES &amp; IGNORED ITEMS</h2>"
+            f"<h2>PREFERENCES &amp; OPTIONS</h2>"
             f"<ul>"
-            f"<li><b>Ignore Rules:</b> Configure ignored file extensions, specific file names, and directories under <b>Tools &gt; Preferences</b>.</li>"
+            f"<li><b>Ignore Rules:</b> Configure ignored file extensions, specific file names, and directories under <b>Tools &gt; Preferences &gt; File Extensions to Ignore</b>.</li>"
+            f"<li><b>Disable Notification Sounds:</b> Enable under <b>Tools &gt; Preferences &gt; Options</b> to mute completion and alert chimes while retaining visual badges.</li>"
             f"<li><b>Wildcard Support:</b> Patterns accept wildcards (e.g. <code>*.tmp</code>, <code>Thumbs.*</code>, <code>.Trash-*</code>) to cleanly exclude OS metadata, caches, and unwanted artifacts.</li>"
             f"<li><b>Defaults:</b> Preloaded with comprehensive exclusion sets for existing checksum manifests, system volumes, OS caches, and media companion files.</li>"
             f"</ul>"
@@ -1252,17 +1348,17 @@ class KryptDistApp(QMainWindow):
             f"<li><b>Cryptographic:</b> BLAKE3, BLAKE2 (2b/2s), SHA-512, SHA-256, SHA-3 (SHA3-256).</li>"
             f"<li><b>Fast Checksum &amp; Legacy:</b> xx3 (xxHash3), SHA-1, MD5, SFV / CRC32.</li>"
             f"</ul>"
-            f"<h2>INTERFACE &amp; PATH NAVIGATION</h2>"
+            f"<h2>INTERFACE &amp; THEMES</h2>"
             f"<ul>"
             f"<li><b>Tree Navigation:</b> Target lists and progress indicators display clean file/folder names. Click individual disclosure triangles (<code>▶</code> / <code>▼</code>) to view complete, word-wrapped paths with zero horizontal scrolling.</li>"
             f"<li><b>Header Toggle:</b> Click the triangle icon on the far right of <b>Target Files &amp; Folders</b> to expand or collapse all target paths at once.</li>"
             f"<li><b>Persistent UI State:</b> Expanded/collapsed triangle states are remembered across restarts.</li>"
-            f"<li><b>Themes:</b> Switch between Dark, Light, and System themes via <b>Tools &gt; Themes</b>.</li>"
+            f"<li><b>Themes:</b> Switch between Dark, Light, and System themes via <b>Tools &gt; Themes</b>. All views and the verification OSD adapt dynamically to the selected theme.</li>"
             f"</ul>"
             f"<h2>VERIFICATION &amp; OSD</h2>"
             f"<p>Pass checksum files via command line or Windows <b>SendTo</b> menu to trigger instant container verification. "
-            f"A lightweight On-Screen Display (OSD) provides real-time progress. If missing or corrupted files are detected, "
-            f"the OSD alerts in red and a detailed log is saved to <code>KryptDist_internal/logs/</code>.</p>"
+            f"A lightweight On-Screen Display (OSD) provides real-time progress. Completed checks present clear visual status badges "
+            f"(green checkmark on success, red X on mismatch). If errors occur, users are prompted whether to generate and open an error log in <code>KryptDist_internal/logs/</code>.</p>"
             f"<h2>CLI &amp; HEADLESS INTEGRATION</h2>"
             f"<ul>"
             f"<li><b>Single-File Verification:</b> Invoke with <code>-v &lt;file&gt;</code> or <code>--verify-file &lt;file&gt;</code> "
@@ -1339,53 +1435,151 @@ class KryptDistApp(QMainWindow):
         has_failed = len(results["failed"]) > 0
         has_missing = len(results["missing"]) > 0
 
+        script_dir = os.path.dirname(os.path.realpath(__file__))
+        internal_dir = os.path.join(script_dir, "KryptDist_internal")
+        icon_path = os.path.join(internal_dir, "icons", "KryptDist_ghost_icon.svg")
+
         if has_failed or has_missing:
             self.osd.trigger_error_flash()
             QApplication.processEvents()
-            
-            # Create centralized logs directory inside internal folder
-            script_dir = os.path.dirname(os.path.realpath(__file__))
-            logs_dir = os.path.join(script_dir, "KryptDist_internal", "logs")
-            os.makedirs(logs_dir, exist_ok=True)
-
-            from datetime import datetime
-            log_filename = f"Hash_Verification_ERRORS_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-            log_path = os.path.join(logs_dir, log_filename)
-
-            try:
-                with open(log_path, 'w', encoding='utf-8') as lf:
-                    lf.write("======================================================================\n")
-                    lf.write(f"KryptDist Verification Error Log - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                    lf.write("======================================================================\n\n")
-
-                    if has_failed:
-                        lf.write("[CORRUPTED / HASH MISMATCH FILES]\n")
-                        for item in results["failed"]:
-                            lf.write(f"File: {item[0]}\n  Expected  : {item[1]}\n  Calculated: {item[2]}\n  Hash File : {item[3]}\n\n")
-
-                    if has_missing:
-                        lf.write("[MISSING FILES]\n")
-                        for item in results["missing"]:
-                            lf.write(f"File: {item[0]}\n  Hash File : {item[1]}\n\n")
-
-                if sys.platform == "win32":
-                    os.startfile(log_path)
-            except Exception as e:
-                print(f"Error writing log file: {e}")
-
             self.osd.close()
-            msg = f"Verification completed with ERRORS!\n\nCorrupted Files: {len(results['failed'])}\nMissing Files: {len(results['missing'])}\n\nLog created at:\n{log_path}"
-            QMessageBox.critical(None, "Verification Errors Detected", msg)
+
+            msg = (
+                f"Verification completed with ERRORS!\n\n"
+                f"Corrupted Files: {len(results['failed'])}\n"
+                f"Missing Files: {len(results['missing'])}\n\n"
+                "Would you like to generate and view an error log?"
+            )
+            msg_box = QMessageBox(self if self.isVisible() else None)
+            msg_box.setWindowTitle("KryptDist - Verification Errors Detected")
+            msg_box.setText(msg)
+            msg_box.setIconPixmap(get_status_pixmap("error"))
+            msg_box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            msg_box.setDefaultButton(QMessageBox.StandardButton.Yes)
+            if os.path.exists(icon_path):
+                msg_box.setWindowIcon(QIcon(icon_path))
+
+            if msg_box.exec() == QMessageBox.StandardButton.Yes:
+                logs_dir = os.path.join(internal_dir, "logs")
+                os.makedirs(logs_dir, exist_ok=True)
+
+                from datetime import datetime
+                log_filename = f"Hash_Verification_ERRORS_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+                log_path = os.path.join(logs_dir, log_filename)
+
+                try:
+                    with open(log_path, 'w', encoding='utf-8') as lf:
+                        lf.write("======================================================================\n")
+                        lf.write(f"KryptDist Verification Error Log - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                        lf.write("======================================================================\n\n")
+
+                        if has_failed:
+                            lf.write("[CORRUPTED / HASH MISMATCH FILES]\n")
+                            for item in results["failed"]:
+                                lf.write(f"File: {item[0]}\n  Expected  : {item[1]}\n  Calculated: {item[2]}\n  Hash File : {item[3]}\n\n")
+
+                        if has_missing:
+                            lf.write("[MISSING FILES]\n")
+                            for item in results["missing"]:
+                                lf.write(f"File: {item[0]}\n  Hash File : {item[1]}\n\n")
+
+                    if sys.platform == "win32":
+                        os.startfile(log_path)
+                except Exception as e:
+                    print(f"Error writing log file: {e}")
+
             sys.exit(1)
         else:
             self.osd.close()
-            QMessageBox.information(None, "Hash Verification", "Hash checking successful. All data is 100% intact.")
+            msg_box = QMessageBox(self if self.isVisible() else None)
+            msg_box.setWindowTitle("KryptDist - Hash Verification")
+            msg_box.setText("Hash checking successful. All data is 100% intact.")
+            msg_box.setIconPixmap(get_status_pixmap("success"))
+            if os.path.exists(icon_path):
+                msg_box.setWindowIcon(QIcon(icon_path))
+            msg_box.exec()
             sys.exit(0)
+
+    def show_alert(self, title, text, icon_type="info", buttons=QMessageBox.StandardButton.Ok, default_button=None):
+        """Displays a dialog box with optional sound suppression and consistent window icons."""
+        sound_disabled = False
+        if hasattr(self, 'settings'):
+            sound_disabled = self.settings.value("disable_notification_sounds", False)
+
+        script_dir = os.path.dirname(os.path.realpath(__file__))
+        internal_dir = os.path.join(script_dir, "KryptDist_internal")
+        icon_path = os.path.join(internal_dir, "icons", "KryptDist_ghost_icon.svg")
+
+        msg_box = QMessageBox(self if self.isVisible() else None)
+        window_title = title if title.startswith("KryptDist") else f"KryptDist - {title}"
+        msg_box.setWindowTitle(window_title)
+        msg_box.setText(text)
+        msg_box.setStandardButtons(buttons)
+        if default_button:
+            msg_box.setDefaultButton(default_button)
+
+        if os.path.exists(icon_path):
+            msg_box.setWindowIcon(QIcon(icon_path))
+
+        if icon_type == "success":
+            msg_box.setIconPixmap(get_status_pixmap("success"))
+        elif icon_type == "error":
+            msg_box.setIconPixmap(get_status_pixmap("error"))
+        elif icon_type == "warning":
+            if not sound_disabled:
+                msg_box.setIcon(QMessageBox.Icon.Warning)
+            else:
+                std_icon = self.style().standardIcon(self.style().StandardPixmap.SP_MessageBoxWarning)
+                msg_box.setIconPixmap(std_icon.pixmap(48, 48))
+        elif icon_type == "question":
+            if not sound_disabled:
+                msg_box.setIcon(QMessageBox.Icon.Question)
+            else:
+                std_icon = self.style().standardIcon(self.style().StandardPixmap.SP_MessageBoxQuestion)
+                msg_box.setIconPixmap(std_icon.pixmap(48, 48))
+        elif icon_type == "info":
+            if not sound_disabled:
+                msg_box.setIcon(QMessageBox.Icon.Information)
+            else:
+                std_icon = self.style().standardIcon(self.style().StandardPixmap.SP_MessageBoxInformation)
+                msg_box.setIconPixmap(std_icon.pixmap(48, 48))
+
+        return msg_box.exec()
+
+    def set_controls_locked(self, locked):
+        self.btn_add_dir.setEnabled(not locked)
+        self.btn_add_files.setEnabled(not locked)
+        self.btn_remove.setEnabled(not locked)
+        self.btn_clear.setEnabled(not locked)
+        self.combo_algo.setEnabled(not locked)
+        self.check_delete_primary.setEnabled(not locked)
+        self.check_subfolders.setEnabled(not locked)
+        self.check_delete_subhashes.setEnabled(not locked)
+        self.path_list.setAcceptDrops(not locked)
+
+    def handle_run_or_cancel(self):
+        if hasattr(self, 'worker') and self.worker.isRunning():
+            reply = self.show_alert(
+                "Cancel Operation",
+                "Are you sure you want to cancel hash generation?",
+                icon_type="question",
+                buttons=QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                default_button=QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                self.worker.cancel()
+                self.worker.wait()
+                self.btn_run.setText("Generate Hashes")
+                self.set_controls_locked(False)
+                self.status_tree_root.setText(0, "Status: Cancelled")
+                self.status_path_label.setText("")
+        else:
+            self.run_generation()
 
     def run_generation(self):
         targets = self.path_list.get_all_paths()
         if not targets:
-            QMessageBox.warning(self, "No Targets", "Please add at least one file or folder to process.")
+            self.show_alert("No Targets", "Please add at least one file or folder to process.", icon_type="warning")
             return
 
         algo = self.combo_algo.currentText()
@@ -1397,6 +1591,8 @@ class KryptDistApp(QMainWindow):
         ignore_files = self.settings.value("ignore_files", DEFAULT_IGNORE_FILES)
         ignore_folders = self.settings.value("ignore_folders", DEFAULT_IGNORE_FOLDERS)
 
+        self.btn_run.setText("Cancel")
+        self.set_controls_locked(True)
         self.worker = HashWorker(
             targets, algo, distribute, delete_sub, delete_primary,
             ignore_types=ignore_types, ignore_files=ignore_files, ignore_folders=ignore_folders
@@ -1510,15 +1706,17 @@ class KryptDistApp(QMainWindow):
                         except Exception as e:
                             print(f"Error writing subfolder hash for {sub_dir}: {e}")
 
+        self.btn_run.setText("Generate Hashes")
+        self.set_controls_locked(False)
         if total_new_files == 0:
             self.status_tree_root.setText(0, "Status: No new files.")
             self.status_path_label.setText("")
-            QMessageBox.information(self, "Complete", "No new files. No checksums generated.")
+            self.show_alert("Complete", "No new files. No checksums generated.", icon_type="info")
         else:
             self.status_tree_root.setText(0, "Status: Complete!")
             self.status_path_label.setText("")
             file_word = "file" if total_new_files == 1 else "files"
-            QMessageBox.information(self, "Complete", f"Successfully generated checksums for {total_new_files} {file_word}.")
+            self.show_alert("Complete", f"Successfully generated checksums for {total_new_files} {file_word}.", icon_type="info")
 
 
 if __name__ == "__main__":
