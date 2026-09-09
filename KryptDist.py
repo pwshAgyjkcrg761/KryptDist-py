@@ -1,6 +1,6 @@
 # ==============================================================================
 # SCRIPT: KryptDist.py
-# VERSION: 2026.09.08__21.10.56
+# VERSION: 2026.09.09__10.20.31
 # TARGET: Python 3.14.5
 #
 # Copyright (C) 2026 pwshAgyjkcrg761
@@ -73,7 +73,7 @@ import re
 import ctypes
 import ctypes.wintypes
 
-APP_VERSION = "2026.09.08__21.10.56"
+APP_VERSION = "2026.09.09__10.20.31"
 
 def natural_sort_key(s):
     """Sort strings containing numbers in human/natural order safely across types."""
@@ -139,7 +139,8 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QPushButton, QFileDialog, QLabel, QMessageBox, 
                              QDialog, QCheckBox, QTextBrowser, QDialogButtonBox,
                              QComboBox, QProgressBar, QHBoxLayout, QListWidget,
-                             QTabWidget, QLineEdit, QFormLayout)
+                             QTabWidget, QLineEdit, QFormLayout, QTreeWidget,
+                             QTreeWidgetItem)
 from PyQt6.QtGui import QActionGroup, QPalette, QColor, QIcon
 import ctypes
 
@@ -389,10 +390,14 @@ class HashWorker(QThread):
     finished = pyqtSignal(dict)
     verification_finished = pyqtSignal(dict)
     
-    def __init__(self, target_dir, algorithm, dist_subfolders, delete_subhashes=False, delete_primary_hash=False,
+    def __init__(self, targets, algorithm, dist_subfolders, delete_subhashes=False, delete_primary_hash=False,
                  ignore_types="", ignore_files="", ignore_folders=""):
         super().__init__()
-        self.target_dir = os.path.normpath(target_dir)
+        if isinstance(targets, str):
+            self.targets = [os.path.normpath(targets)]
+        else:
+            self.targets = [os.path.normpath(t) for t in targets]
+        self.target_dir = self.targets[0] if self.targets else ""
         self.algorithm = algorithm
         self.dist_subfolders = dist_subfolders
         self.delete_subhashes = delete_subhashes
@@ -402,97 +407,99 @@ class HashWorker(QThread):
         self.ignore_folders = ignore_folders
         
     def run(self):
-        root_folder_name = os.path.basename(self.target_dir)
-        master_hash_path = os.path.join(self.target_dir, f"{root_folder_name}.hash")
+        all_targets_data = {}
+        total_files_to_hash = []
 
-        # Clean existing primary/master .hash file if requested
-        if self.delete_primary_hash:
-            if os.path.exists(master_hash_path):
-                try:
-                    os.remove(master_hash_path)
-                except Exception as e:
-                    print(f"Error removing primary hash: {e}")
+        for target in self.targets:
+            if not os.path.exists(target):
+                continue
 
-        # Clean existing subdirectory checksum files if requested (leaves root .hash file intact)
-        if self.delete_subhashes:
-            for root, dirs, files in os.walk(self.target_dir):
-                # Filter out ignored subdirectories dynamically
-                dirs[:] = [d for d in dirs if not is_ignored(d, is_dir=True, ignore_folders=self.ignore_folders)]
-                # Skip root folder to avoid deleting the master hash file
-                if os.path.normpath(root) == self.target_dir:
-                    continue
-                for f in files:
-                    if f.lower().endswith(CHECKSUM_EXTS):
-                        try:
-                            os.remove(os.path.join(root, f))
-                        except Exception as e:
-                            print(f"Error removing subfolder checksum file {f}: {e}")
-        # 1. Parse existing master .hash file to track previously hashed relative paths
-        existing_entries = set()
-        root_folder_name = os.path.basename(self.target_dir)
-        master_hash_path = os.path.join(self.target_dir, f"{root_folder_name}.hash")
-        
-        if os.path.exists(master_hash_path):
-            try:
-                with open(master_hash_path, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        line = line.strip()
-                        if line and not line.startswith('#'):
-                            parts = line.split(maxsplit=1)
-                            if len(parts) == 2:
-                                rel_p = parts[1].lstrip('*').strip()
-                                existing_entries.add(os.path.normpath(rel_p))
-            except Exception as e:
-                print(f"Error reading existing master hash: {e}")
+            if os.path.isdir(target):
+                target_dir = target
+                root_folder_name = os.path.basename(target_dir)
+                master_hash_path = os.path.join(target_dir, f"{root_folder_name}.hash")
 
-        # 2. Collect all valid non-checksum and non-ignored files
-        all_files = []
-        for root, dirs, files in os.walk(self.target_dir):
-            # Exclude ignored directory branches from traversal
-            dirs[:] = [d for d in dirs if not is_ignored(d, is_dir=True, ignore_folders=self.ignore_folders)]
-            for f in files:
-                if not f.lower().endswith(CHECKSUM_EXTS) and not is_ignored(
-                    f, is_dir=False, ignore_types=self.ignore_types, ignore_files=self.ignore_files
-                ):
-                    all_files.append(os.path.join(root, f))
+                # Clean existing primary/master .hash file if requested
+                if self.delete_primary_hash and os.path.exists(master_hash_path):
+                    try:
+                        os.remove(master_hash_path)
+                    except Exception as e:
+                        print(f"Error removing primary hash: {e}")
 
-        # 3. Read hashes from existing master file so we have the full record available
-        all_known_hashes = {}
-        if os.path.exists(master_hash_path):
-            try:
-                with open(master_hash_path, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        line = line.strip()
-                        if line and not line.startswith('#'):
-                            parts = line.split(maxsplit=1)
-                            if len(parts) == 2:
-                                h_val = parts[0].strip()
-                                rel_p = os.path.normpath(parts[1].lstrip('*').strip())
-                                all_known_hashes[rel_p] = h_val
-            except Exception as e:
-                print(f"Error reading existing master entries: {e}")
+                # Clean existing subdirectory checksum files if requested
+                if self.delete_subhashes:
+                    for root, dirs, files in os.walk(target_dir):
+                        dirs[:] = [d for d in dirs if not is_ignored(d, is_dir=True, ignore_folders=self.ignore_folders)]
+                        if os.path.normpath(root) == target_dir:
+                            continue
+                        for f in files:
+                            if f.lower().endswith(CHECKSUM_EXTS):
+                                try:
+                                    os.remove(os.path.join(root, f))
+                                except Exception as e:
+                                    print(f"Error removing subfolder checksum file {f}: {e}")
 
-        # 4. Filter down strictly to NEW files requiring calculation
-        file_list = []
-        for file_path in all_files:
-            rel_path = os.path.normpath(os.path.relpath(file_path, self.target_dir))
-            if rel_path not in existing_entries:
-                file_list.append(file_path)
+                existing_entries = set()
+                all_known_hashes = {}
+                if os.path.exists(master_hash_path):
+                    try:
+                        with open(master_hash_path, 'r', encoding='utf-8') as f:
+                            for line in f:
+                                line = line.strip()
+                                if line and not line.startswith('#'):
+                                    parts = line.split(maxsplit=1)
+                                    if len(parts) == 2:
+                                        h_val = parts[0].strip()
+                                        rel_p = os.path.normpath(parts[1].lstrip('*').strip())
+                                        existing_entries.add(rel_p)
+                                        all_known_hashes[rel_p] = h_val
+                    except Exception as e:
+                        print(f"Error reading existing master hash: {e}")
 
-        total_files = len(file_list)
-        results = dict(all_known_hashes)  # Seed results with already-known hashes
-        
-        for idx, file_path in enumerate(file_list, 1):
-            rel_path = os.path.relpath(file_path, self.target_dir)
-            self.progress.emit(idx, total_files, rel_path)
-            
+                target_new_files = []
+                for root, dirs, files in os.walk(target_dir):
+                    dirs[:] = [d for d in dirs if not is_ignored(d, is_dir=True, ignore_folders=self.ignore_folders)]
+                    for f in files:
+                        if not f.lower().endswith(CHECKSUM_EXTS) and not is_ignored(
+                            f, is_dir=False, ignore_types=self.ignore_types, ignore_files=self.ignore_files
+                        ):
+                            f_path = os.path.join(root, f)
+                            rel_p = os.path.normpath(os.path.relpath(f_path, target_dir))
+                            if rel_p not in existing_entries:
+                                target_new_files.append((f_path, rel_p))
+                                total_files_to_hash.append((target_dir, f_path, rel_p))
+
+                all_targets_data[target_dir] = {
+                    "is_dir": True,
+                    "known": all_known_hashes,
+                    "results": dict(all_known_hashes),
+                    "new_count": len(target_new_files)
+                }
+            else:
+                f_path = target
+                target_dir = os.path.dirname(f_path)
+                rel_p = os.path.basename(f_path)
+                total_files_to_hash.append((target_dir, f_path, rel_p))
+                all_targets_data.setdefault(target_dir, {
+                    "is_dir": False,
+                    "known": {},
+                    "results": {},
+                    "new_count": 0
+                })
+                all_targets_data[target_dir]["new_count"] += 1
+
+        total_files = len(total_files_to_hash)
+
+        for idx, (target_dir, file_path, rel_path) in enumerate(total_files_to_hash, 1):
+            self.progress.emit(idx, total_files, file_path)
+
             try:
                 if self.algorithm == "SFV / CRC32":
                     crc_val = 0
                     with open(file_path, 'rb') as f:
                         while chunk := f.read(65536):
                             crc_val = zlib.crc32(chunk, crc_val)
-                    results[rel_path] = f"{crc_val & 0xFFFFFFFF:08x}"
+                    digest = f"{crc_val & 0xFFFFFFFF:08x}"
                 else:
                     if self.algorithm == "BLAKE3":
                         hasher = blake3.blake3() if HAS_BLAKE3 else hashlib.blake2b()
@@ -514,15 +521,17 @@ class HashWorker(QThread):
                         hasher = hashlib.md5()
                     else:
                         hasher = hashlib.blake2b()
-                        
+
                     with open(file_path, 'rb') as f:
                         while chunk := f.read(65536):
                             hasher.update(chunk)
-                    results[rel_path] = hasher.hexdigest()
+                    digest = hasher.hexdigest()
+
+                all_targets_data[target_dir]["results"][rel_path] = digest
             except Exception as e:
                 print(f"Error hashing {file_path}: {e}")
-                
-        self.finished.emit(results)
+
+        self.finished.emit(all_targets_data)
 
     def verify_hash_files(self, hash_file_paths):
         verification_results = {
@@ -757,10 +766,15 @@ class VerificationOSD(QWidget):
         self.lbl_file.setText("KryptDist | CORRUPTION DETECTED!")
 
 
-class DropListWidget(QListWidget):
+class DropTreeWidget(QTreeWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.setHeaderHidden(True)
         self.setAcceptDrops(True)
+        self.setRootIsDecorated(True)
+        self.setWordWrap(True)
+        self.header().setStretchLastSection(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
@@ -776,7 +790,7 @@ class DropListWidget(QListWidget):
 
     def dropEvent(self, event):
         if event.mimeData().hasUrls():
-            all_paths = [self.item(i).text() for i in range(self.count())]
+            all_paths = self.get_all_paths()
             for url in event.mimeData().urls():
                 file_path = os.path.normpath(url.toLocalFile()).replace('/', os.sep)
                 if file_path and os.path.exists(file_path):
@@ -785,11 +799,41 @@ class DropListWidget(QListWidget):
                     if file_path not in all_paths:
                         all_paths.append(file_path)
             all_paths.sort(key=natural_sort_key)
-            self.clear()
-            self.addItems(all_paths)
+            self.set_paths(all_paths)
             event.acceptProposedAction()
         else:
             event.ignore()
+
+    def get_all_paths(self):
+        paths = []
+        for i in range(self.topLevelItemCount()):
+            item = self.topLevelItem(i)
+            path = item.data(0, Qt.ItemDataRole.UserRole)
+            if path:
+                paths.append(path)
+        return paths
+
+    def set_paths(self, paths):
+        self.clear()
+        for p in paths:
+            self.add_path(p)
+
+    def add_path(self, path):
+        clean_p = os.path.normpath(os.path.abspath(path)).replace('/', os.sep)
+        existing = self.get_all_paths()
+        if clean_p in existing:
+            return
+        name = os.path.basename(clean_p) or clean_p
+        parent_item = QTreeWidgetItem(self, [name])
+        parent_item.setData(0, Qt.ItemDataRole.UserRole, clean_p)
+        parent_item.setToolTip(0, clean_p)
+        child_item = QTreeWidgetItem(parent_item, [""])
+        child_item.setData(0, Qt.ItemDataRole.UserRole, clean_p)
+
+        path_label = QLabel(clean_p)
+        path_label.setWordWrap(True)
+        path_label.setStyleSheet("color: palette(text); background: transparent;")
+        self.setItemWidget(child_item, 0, path_label)
 
 
 class KryptDistApp(QMainWindow):
@@ -841,10 +885,22 @@ class KryptDistApp(QMainWindow):
         layout = QVBoxLayout()
         
         # Target Paths List
-        layout.addWidget(QLabel("Target Files & Folders:"))
-        self.path_list = DropListWidget()
+        header_layout = QHBoxLayout()
+        header_layout.addWidget(QLabel("Target Files & Folders:"))
+        header_layout.addStretch()
+        self.btn_toggle_targets = QPushButton("▶")
+        self.btn_toggle_targets.setToolTip("Expand/Collapse All Target Paths")
+        self.btn_toggle_targets.setFlat(True)
+        self.btn_toggle_targets.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_toggle_targets.setFixedSize(24, 20)
+        self.btn_toggle_targets.setStyleSheet("QPushButton { border: none; font-size: 11px; color: palette(text); padding: 0px; } QPushButton:hover { color: #007acc; }")
+        self.btn_toggle_targets.clicked.connect(self.toggle_all_targets)
+        header_layout.addWidget(self.btn_toggle_targets)
+        layout.addLayout(header_layout)
+
+        self.path_list = DropTreeWidget()
         if self.target_paths:
-            self.path_list.addItems(self.target_paths)
+            self.path_list.set_paths(self.target_paths)
         layout.addWidget(self.path_list)
 
         # Path Control Buttons
@@ -918,12 +974,23 @@ class KryptDistApp(QMainWindow):
         layout.addLayout(options_row2)
 
         # Progress Section
-        self.status_label = QLabel("Status: Ready")
-        self.status_label.setWordWrap(True)
-        self.status_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        line_height = self.status_label.fontMetrics().lineSpacing()
-        self.status_label.setFixedHeight(line_height * 4 + 6)
-        layout.addWidget(self.status_label)
+        self.status_tree = QTreeWidget()
+        self.status_tree.setHeaderHidden(True)
+        self.status_tree.setRootIsDecorated(True)
+        self.status_tree.header().setStretchLastSection(True)
+        self.status_tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.status_tree.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.status_tree.setAutoScroll(False)
+        self.status_tree.setFixedHeight(75)
+        self.status_tree_root = QTreeWidgetItem(self.status_tree, ["Status: Ready"])
+        self.status_tree_path = QTreeWidgetItem(self.status_tree_root, [""])
+        self.status_path_label = QLabel("")
+        self.status_path_label.setWordWrap(True)
+        self.status_path_label.setMinimumHeight(36)
+        self.status_path_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.status_path_label.setStyleSheet("color: palette(text); background: transparent;")
+        self.status_tree.setItemWidget(self.status_tree_path, 0, self.status_path_label)
+        layout.addWidget(self.status_tree)
         
         self.progress_bar = QProgressBar()
         self.progress_bar.setValue(0)
@@ -948,6 +1015,16 @@ class KryptDistApp(QMainWindow):
                 idx = self.combo_algo.findText(saved_algo)
                 if idx >= 0:
                     self.combo_algo.setCurrentIndex(idx)
+                if hasattr(self, 'status_tree_root'):
+                    self.status_tree_root.setExpanded(self.settings.value("progress_expanded", False))
+                    self.status_tree.scheduleDelayedItemsLayout()
+                if hasattr(self, 'btn_toggle_targets'):
+                    targets_expanded = self.settings.value("targets_expanded", False)
+                    self.btn_toggle_targets.setText("▼" if targets_expanded else "▶")
+                    if targets_expanded:
+                        self.path_list.expandAll()
+                    else:
+                        self.path_list.collapseAll()
             except Exception as e:
                 print(f"Error loading saved settings: {e}")
         self.update_mode_indicator()
@@ -985,7 +1062,20 @@ class KryptDistApp(QMainWindow):
         self.settings.setValue("delete_subhashes", self.check_delete_subhashes.isChecked())
         self.settings.setValue("algorithm", self.combo_algo.currentText())
         self.settings.setValue("theme", self.current_theme)
+        if hasattr(self, 'status_tree_root'):
+            self.settings.setValue("progress_expanded", self.status_tree_root.isExpanded())
+        if hasattr(self, 'btn_toggle_targets'):
+            self.settings.setValue("targets_expanded", self.btn_toggle_targets.text() == "▼")
         event.accept()
+
+    def toggle_all_targets(self):
+        is_expanded = self.btn_toggle_targets.text() == "▼"
+        if is_expanded:
+            self.path_list.collapseAll()
+            self.btn_toggle_targets.setText("▶")
+        else:
+            self.path_list.expandAll()
+            self.btn_toggle_targets.setText("▼")
 
     def add_directory(self):
         dir_path = QFileDialog.getExistingDirectory(self, "Select Directory", self.last_directory)
@@ -993,25 +1083,28 @@ class KryptDistApp(QMainWindow):
             clean_p = os.path.normpath(dir_path).replace('/', os.sep)
             self.last_directory = clean_p
             self.settings.setValue("last_directory", self.last_directory)
-            existing = [self.path_list.item(i).text() for i in range(self.path_list.count())]
-            if clean_p not in existing:
-                self.path_list.addItem(clean_p)
+            self.path_list.add_path(clean_p)
+            if self.btn_toggle_targets.text() == "▼":
+                self.path_list.expandAll()
 
     def add_files(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Select Files", self.last_directory)
         if files:
             self.last_directory = os.path.normpath(os.path.dirname(files[0])).replace('/', os.sep)
             self.settings.setValue("last_directory", self.last_directory)
-            existing = [self.path_list.item(i).text() for i in range(self.path_list.count())]
             files.sort(key=natural_sort_key)
             for f in files:
                 clean_p = os.path.normpath(f).replace('/', os.sep)
-                if not clean_p.lower().endswith(CHECKSUM_EXTS) and clean_p not in existing:
-                    self.path_list.addItem(clean_p)
+                if not clean_p.lower().endswith(CHECKSUM_EXTS):
+                    self.path_list.add_path(clean_p)
 
     def remove_selected_path(self):
         for item in self.path_list.selectedItems():
-            self.path_list.takeItem(self.path_list.row(item))
+            parent = item.parent()
+            target_item = parent if parent is not None else item
+            index = self.path_list.indexOfTopLevelItem(target_item)
+            if index >= 0:
+                self.path_list.takeTopLevelItem(index)
 
     def clear_paths(self):
         self.path_list.clear()
@@ -1106,7 +1199,7 @@ class KryptDistApp(QMainWindow):
     def show_manual(self):
         dialog = QDialog(self)
         dialog.setWindowTitle("Manual")
-        dialog.resize(650, 500)
+        dialog.resize(650, 520)
         layout = QVBoxLayout(dialog)
 
         text_browser = QTextBrowser()
@@ -1133,11 +1226,13 @@ class KryptDistApp(QMainWindow):
             f"<h2>OVERVIEW</h2>"
             f"<p>KryptDist is a high-performance checksum generator and integrity verifier designed to produce "
             f"primary and distributed subdirectory checksum sets (<code>.hash</code>).</p>"
-            f"<h2>OPERATIONAL MODES</h2>"
+            f"<h2>OPERATIONAL MODES &amp; BATCH HASHING</h2>"
             f"<ul>"
             f"<li><b>MultiHash Mode:</b> Generates both a root primary <code>.hash</code> file and individual "
             f"subdirectory hashes within every subfolder in a single scanning pass.</li>"
             f"<li><b>Primary Hash Only Mode:</b> Generates only the root directory's primary <code>.hash</code> file.</li>"
+            f"<li><b>Batch Processing:</b> Add multiple folders and files simultaneously via Drag &amp; Drop or Windows <b>SendTo</b>. "
+            f"KryptDist processes every root target independently in a single, unified queue.</li>"
             f"</ul>"
             f"<h2>HASHING OPTIONS</h2>"
             f"<ul>"
@@ -1155,23 +1250,25 @@ class KryptDistApp(QMainWindow):
             f"<h2>SUPPORTED ALGORITHMS</h2>"
             f"<ul>"
             f"<li><b>Cryptographic:</b> BLAKE3, BLAKE2 (2b/2s), SHA-512, SHA-256, SHA-3 (SHA3-256).</li>"
-            f"<li><b>Fast Checksum & Legacy:</b> xx3 (xxHash3), SHA-1, MD5, SFV / CRC32.</li>"
+            f"<li><b>Fast Checksum &amp; Legacy:</b> xx3 (xxHash3), SHA-1, MD5, SFV / CRC32.</li>"
             f"</ul>"
-            f"<h2>VERIFICATION & OSD</h2>"
+            f"<h2>INTERFACE &amp; PATH NAVIGATION</h2>"
+            f"<ul>"
+            f"<li><b>Tree Navigation:</b> Target lists and progress indicators display clean file/folder names. Click individual disclosure triangles (<code>▶</code> / <code>▼</code>) to view complete, word-wrapped paths with zero horizontal scrolling.</li>"
+            f"<li><b>Header Toggle:</b> Click the triangle icon on the far right of <b>Target Files &amp; Folders</b> to expand or collapse all target paths at once.</li>"
+            f"<li><b>Persistent UI State:</b> Expanded/collapsed triangle states are remembered across restarts.</li>"
+            f"<li><b>Themes:</b> Switch between Dark, Light, and System themes via <b>Tools &gt; Themes</b>.</li>"
+            f"</ul>"
+            f"<h2>VERIFICATION &amp; OSD</h2>"
             f"<p>Pass checksum files via command line or Windows <b>SendTo</b> menu to trigger instant container verification. "
             f"A lightweight On-Screen Display (OSD) provides real-time progress. If missing or corrupted files are detected, "
             f"the OSD alerts in red and a detailed log is saved to <code>KryptDist_internal/logs/</code>.</p>"
-            f"<h2>CLI & HEADLESS INTEGRATION</h2>"
+            f"<h2>CLI &amp; HEADLESS INTEGRATION</h2>"
             f"<ul>"
             f"<li><b>Single-File Verification:</b> Invoke with <code>-v &lt;file&gt;</code> or <code>--verify-file &lt;file&gt;</code> "
             f"for instant, headless verification against local or parent hash containers.</li>"
             f"<li><b>Exit Codes:</b> Returns <code>0</code> when files match, or <code>2</code> on mismatch, missing files, or errors, "
             f"enabling seamless integration with external managers like HashMan.</li>"
-            f"</ul>"
-            f"<h2>INTERFACE & SHORTCUTS</h2>"
-            f"<ul>"
-            f"<li><b>Drag & Drop:</b> Drag files or directories directly into the target list.</li>"
-            f"<li><b>Themes:</b> Switch between Dark, Light, and System themes via the <b>Tools &gt; Themes</b> menu.</li>"
             f"</ul>"
         )
 
@@ -1286,7 +1383,7 @@ class KryptDistApp(QMainWindow):
             sys.exit(0)
 
     def run_generation(self):
-        targets = [self.path_list.item(i).text() for i in range(self.path_list.count())]
+        targets = self.path_list.get_all_paths()
         if not targets:
             QMessageBox.warning(self, "No Targets", "Please add at least one file or folder to process.")
             return
@@ -1300,135 +1397,128 @@ class KryptDistApp(QMainWindow):
         ignore_files = self.settings.value("ignore_files", DEFAULT_IGNORE_FILES)
         ignore_folders = self.settings.value("ignore_folders", DEFAULT_IGNORE_FOLDERS)
 
-        target_dir = targets[0] if targets else self.last_directory
         self.worker = HashWorker(
-            target_dir, algo, distribute, delete_sub, delete_primary,
+            targets, algo, distribute, delete_sub, delete_primary,
             ignore_types=ignore_types, ignore_files=ignore_files, ignore_folders=ignore_folders
         )
         self.worker.progress.connect(self.update_progress)
         self.worker.finished.connect(self.generation_complete)
         self.worker.start()
 
-    def update_progress(self, current, total, rel_path):
+    def update_progress(self, current, total, file_path):
         self.progress_bar.setMaximum(total)
         self.progress_bar.setValue(current)
         
-        full_text = f"Hashing [{current}/{total}]: {rel_path}"
-        metrics = self.status_label.fontMetrics()
-        label_width = max(self.status_label.width() - 10, 200)
-        max_budget = label_width * 4
-
-        if metrics.horizontalAdvance(full_text) > max_budget:
-            elided = metrics.elidedText(full_text, Qt.TextElideMode.ElideMiddle, max_budget)
-            self.status_label.setText(elided)
-        else:
-            self.status_label.setText(full_text)
+        file_name = os.path.basename(file_path) or file_path
+        self.status_tree_root.setText(0, f"Hashing [{current}/{total}]: {file_name}")
+        self.status_path_label.setText(file_path)
 
     def generation_complete(self, results):
-        self.status_label.setText("Status: Writing hash files...")
+        self.status_tree_root.setText(0, "Status: Writing hash files...")
+        self.status_path_label.setText("")
         algo = self.combo_algo.currentText()
-        target_dir = self.worker.target_dir
-        root_folder_name = os.path.basename(target_dir)
-        master_hash_path = os.path.join(target_dir, f"{root_folder_name}.hash")
-        
         header = f"# checksum file generated with KryptDist v{APP_VERSION}\n# algorithm: {algo}\n\n"
         
-        # Parse existing master entries and detect last declared algorithm
-        existing_master = {}
-        last_master_algo = None
-        if os.path.exists(master_hash_path):
-            try:
-                with open(master_hash_path, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        line = line.strip()
-                        if line.startswith('# algorithm:'):
-                            last_master_algo = line.split(':', 1)[1].strip()
-                        elif line and not line.startswith('#'):
-                            parts = line.split(maxsplit=1)
-                            if len(parts) == 2:
-                                existing_master[os.path.normpath(parts[1].lstrip('*').strip())] = parts[0].strip()
-            except Exception as e:
-                print(f"Error reading existing master entries: {e}")
+        total_new_files = 0
 
-        # Determine strictly new entries for master file
-        new_master_entries = {k: v for k, v in results.items() if os.path.normpath(k) not in existing_master}
+        for target_dir, data in results.items():
+            target_results = data["results"]
+            existing_master = data["known"]
+            is_dir = data.get("is_dir", True)
+            root_folder_name = os.path.basename(target_dir) or "checksums"
+            master_hash_path = os.path.join(target_dir, f"{root_folder_name}.hash")
 
-        # Write or Append Master Hash if there are new entries or if master doesn't exist
-        if new_master_entries or not os.path.exists(master_hash_path):
-            try:
-                file_exists = os.path.exists(master_hash_path)
-                with open(master_hash_path, 'a' if file_exists else 'w', encoding='utf-8') as f:
-                    if not file_exists:
-                        f.write(header)
-                    else:
-                        if last_master_algo != algo:
-                            f.write(f"\n# algorithm: {algo}\n")
-                    for rel_path, file_hash in new_master_entries.items():
-                        f.write(f"{file_hash} *{rel_path}\n")
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to write master hash file: {e}")
-                return
+            # Determine strictly new entries for master file
+            new_master_entries = {k: v for k, v in target_results.items() if os.path.normpath(k) not in existing_master}
+            total_new_files += len(new_master_entries)
 
-        # Write/Append Distributed Subfolder Hashes if enabled
-        if self.check_subfolders.isChecked():
-            subfolder_hashes = {}
-            for rel_path, file_hash in results.items():
-                norm_rel = os.path.normpath(rel_path)
-                parts = norm_rel.split(os.sep)
-                if len(parts) > 1:
-                    sub_dir = os.path.join(target_dir, *parts[:-1])
-                    sub_rel_path = parts[-1]
-                    subfolder_hashes.setdefault(sub_dir, []).append((file_hash, sub_rel_path))
+            # Check existing file to detect last declared algorithm
+            last_master_algo = None
+            if os.path.exists(master_hash_path):
+                try:
+                    with open(master_hash_path, 'r', encoding='utf-8') as f:
+                        for line in f:
+                            line = line.strip()
+                            if line.startswith('# algorithm:'):
+                                last_master_algo = line.split(':', 1)[1].strip()
+                except Exception as e:
+                    print(f"Error reading existing master algorithm: {e}")
 
-            for sub_dir, entries in subfolder_hashes.items():
-                sub_folder_name = os.path.basename(sub_dir)
-                sub_hash_path = os.path.join(sub_dir, f"{sub_folder_name}.hash")
-                
-                # Parse existing entries and detect last declared algorithm in subfolder hash file
-                existing_sub_entries = set()
-                last_sub_algo = None
-                if os.path.exists(sub_hash_path):
-                    try:
-                        with open(sub_hash_path, 'r', encoding='utf-8') as f:
-                            for line in f:
-                                line = line.strip()
-                                if line.startswith('# algorithm:'):
-                                    last_sub_algo = line.split(':', 1)[1].strip()
-                                elif line and not line.startswith('#'):
-                                    parts = line.split(maxsplit=1)
-                                    if len(parts) == 2:
-                                        existing_sub_entries.add(os.path.normpath(parts[1].lstrip('*').strip()))
-                    except Exception as e:
-                        print(f"Error reading existing subfolder hash {sub_hash_path}: {e}")
+            # Write or Append Master Hash if there are new entries or if master doesn't exist
+            if new_master_entries or not os.path.exists(master_hash_path):
+                try:
+                    file_exists = os.path.exists(master_hash_path)
+                    with open(master_hash_path, 'a' if file_exists else 'w', encoding='utf-8') as mf:
+                        if not file_exists:
+                            mf.write(header)
+                        else:
+                            if last_master_algo != algo:
+                                mf.write(f"\n# algorithm: {algo}\n")
+                        for rel_path, file_hash in new_master_entries.items():
+                            mf.write(f"{file_hash} *{rel_path}\n")
+                except Exception as e:
+                    QMessageBox.critical(self, "Error", f"Failed to write master hash file for {target_dir}: {e}")
+                    return
 
-                # Filter strictly to new subfolder entries
-                new_sub_entries = [
-                    (f_hash, s_rel) for f_hash, s_rel in entries 
-                    if os.path.normpath(s_rel) not in existing_sub_entries
-                ]
+            # Write/Append Distributed Subfolder Hashes if enabled
+            if is_dir and self.check_subfolders.isChecked():
+                subfolder_hashes = {}
+                for rel_path, file_hash in target_results.items():
+                    norm_rel = os.path.normpath(rel_path)
+                    parts = norm_rel.split(os.sep)
+                    if len(parts) > 1:
+                        sub_dir = os.path.join(target_dir, *parts[:-1])
+                        sub_rel_path = parts[-1]
+                        subfolder_hashes.setdefault(sub_dir, []).append((file_hash, sub_rel_path))
 
-                if new_sub_entries or not os.path.exists(sub_hash_path):
-                    try:
-                        sub_file_exists = os.path.exists(sub_hash_path)
-                        with open(sub_hash_path, 'a' if sub_file_exists else 'w', encoding='utf-8') as f:
-                            if not sub_file_exists:
-                                f.write(header)
-                            else:
-                                if last_sub_algo != algo:
-                                    f.write(f"\n# algorithm: {algo}\n")
-                            for file_hash, sub_rel_path in new_sub_entries:
-                                f.write(f"{file_hash} *{sub_rel_path}\n")
-                    except Exception as e:
-                        print(f"Error writing subfolder hash for {sub_dir}: {e}")
+                for sub_dir, entries in subfolder_hashes.items():
+                    sub_folder_name = os.path.basename(sub_dir)
+                    sub_hash_path = os.path.join(sub_dir, f"{sub_folder_name}.hash")
 
-        if not new_master_entries:
-            self.status_label.setText("Status: No new files.")
+                    existing_sub_entries = set()
+                    last_sub_algo = None
+                    if os.path.exists(sub_hash_path):
+                        try:
+                            with open(sub_hash_path, 'r', encoding='utf-8') as f:
+                                for line in f:
+                                    line = line.strip()
+                                    if line.startswith('# algorithm:'):
+                                        last_sub_algo = line.split(':', 1)[1].strip()
+                                    elif line and not line.startswith('#'):
+                                        parts = line.split(maxsplit=1)
+                                        if len(parts) == 2:
+                                            existing_sub_entries.add(os.path.normpath(parts[1].lstrip('*').strip()))
+                        except Exception as e:
+                            print(f"Error reading existing subfolder hash {sub_hash_path}: {e}")
+
+                    new_sub_entries = [
+                        (f_hash, s_rel) for f_hash, s_rel in entries 
+                        if os.path.normpath(s_rel) not in existing_sub_entries
+                    ]
+
+                    if new_sub_entries or not os.path.exists(sub_hash_path):
+                        try:
+                            sub_file_exists = os.path.exists(sub_hash_path)
+                            with open(sub_hash_path, 'a' if sub_file_exists else 'w', encoding='utf-8') as sf:
+                                if not sub_file_exists:
+                                    sf.write(header)
+                                else:
+                                    if last_sub_algo != algo:
+                                        sf.write(f"\n# algorithm: {algo}\n")
+                                for file_hash, sub_rel_path in new_sub_entries:
+                                    sf.write(f"{file_hash} *{sub_rel_path}\n")
+                        except Exception as e:
+                            print(f"Error writing subfolder hash for {sub_dir}: {e}")
+
+        if total_new_files == 0:
+            self.status_tree_root.setText(0, "Status: No new files.")
+            self.status_path_label.setText("")
             QMessageBox.information(self, "Complete", "No new files. No checksums generated.")
         else:
-            self.status_label.setText("Status: Complete!")
-            count = len(new_master_entries)
-            file_word = "file" if count == 1 else "files"
-            QMessageBox.information(self, "Complete", f"Successfully generated checksums for {count} {file_word}.")
+            self.status_tree_root.setText(0, "Status: Complete!")
+            self.status_path_label.setText("")
+            file_word = "file" if total_new_files == 1 else "files"
+            QMessageBox.information(self, "Complete", f"Successfully generated checksums for {total_new_files} {file_word}.")
 
 
 if __name__ == "__main__":
