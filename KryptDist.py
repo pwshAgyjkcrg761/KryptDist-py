@@ -1,6 +1,6 @@
 # ==============================================================================
 # SCRIPT: KryptDist.py
-# VERSION: 2026.09.08__14.44.10
+# VERSION: 2026.09.08__18.53.26
 # TARGET: Python 3.14.5
 #
 # Copyright (C) 2026 pwshAgyjkcrg761
@@ -68,8 +68,44 @@ import sys
 import os
 import json
 import hashlib
+import fnmatch
 import ctypes
 import ctypes.wintypes
+
+APP_VERSION = "2026.09.08__18.53.26"
+
+DEFAULT_IGNORE_TYPES = "hash,b3,blake3,b2,blake2,blake2b,blake2s,sha512,sha256,sha3,sha3-256,sha3-512,xx3,xxh3,xxh,sha1,sha,md5,sfv,crc32,crc,lnk,url,m3u,m3u8,pls,log,tmp,temp,bak,part,crdownload"
+DEFAULT_IGNORE_FILES = "desktop.ini,folder.jpg,.desktop,.directory,thumbs.db,ehthumbs.db,ehthumbs_vista.db,md5sums,md5sum.txt,sha256sums,sha256sum.txt,sha512sums,sha512sum.txt,checksums.txt,hashes.txt,.DS_Store,._.DS_Store,._*,~$*,pagefile.sys,hiberfil.sys,swapfile.sys,dumpstack.log.tmp"
+DEFAULT_IGNORE_FOLDERS = "RECYCLER,$Recycle.Bin,System Volume Information,.Spotlight-V100,.Trashes,.fseventsd,.Trash-*,__pycache__,.pytest_cache,.git,.svn,.hg,node_modules"
+
+def matches_pattern_list(name, pattern_csv):
+    """Checks if a file/folder name matches any wildcard/extension pattern in a comma-separated string."""
+    if not pattern_csv:
+        return False
+    patterns = [p.strip() for p in pattern_csv.split(",") if p.strip()]
+    name_lower = name.lower()
+    for pat in patterns:
+        pat_lower = pat.lower()
+        if fnmatch.fnmatch(name_lower, pat_lower):
+            return True
+        # Match bare extensions like 'log' against '.log'
+        if not pat_lower.startswith("*") and not pat_lower.startswith("."):
+            if fnmatch.fnmatch(name_lower, f"*.{pat_lower}"):
+                return True
+    return False
+
+def is_ignored(item_name, is_dir=False, ignore_types="", ignore_files="", ignore_folders=""):
+    """Determines whether a file or directory should be ignored based on user rules."""
+    if is_dir:
+        return matches_pattern_list(item_name, ignore_folders)
+    
+    # Check ignored file extensions / types
+    if matches_pattern_list(item_name, ignore_types):
+        return True
+    # Check ignored specific file names / wildcards
+    if matches_pattern_list(item_name, ignore_files):
+        return True
+    return False
 
 def get_user_profile_dir():
     """Retrieves the user profile directory safely via Win32 API."""
@@ -97,11 +133,12 @@ from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QPushButton, QFileDialog, QLabel, QMessageBox, 
                              QDialog, QCheckBox, QTextBrowser, QDialogButtonBox,
-                             QComboBox, QProgressBar, QHBoxLayout, QListWidget)
+                             QComboBox, QProgressBar, QHBoxLayout, QListWidget,
+                             QTabWidget, QLineEdit, QFormLayout)
 from PyQt6.QtGui import QActionGroup, QPalette, QColor, QIcon
 import ctypes
 
-APP_VERSION = "2026.09.08__14.44.10"
+
 CHECKSUM_EXTS = (
     ".hash", ".b3", ".blake3", ".b2", ".blake2", ".blake2b", ".blake2s",
     ".sha512", ".sha256", ".sha3", ".sha3-256", ".sha3-512",
@@ -268,19 +305,96 @@ class SettingsWrapper:
         except: pass
 
 
+class PreferencesDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_app = parent
+        self.setWindowTitle("Preferences")
+        self.resize(560, 320)
+
+        main_layout = QVBoxLayout(self)
+        self.tabs = QTabWidget()
+
+        # Tab: File Extensions to Ignore
+        ignore_tab = QWidget()
+        ignore_layout = QVBoxLayout(ignore_tab)
+
+        form_layout = QFormLayout()
+        form_layout.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+
+        self.txt_ignore_types = QLineEdit()
+        self.txt_ignore_types.setToolTip("Comma-separated list of file extensions to skip (e.g., md5, sha1, log, bak, *.tmp)")
+        form_layout.addRow("Ignored Extensions / Types:", self.txt_ignore_types)
+
+        self.txt_ignore_files = QLineEdit()
+        self.txt_ignore_files.setToolTip("Comma-separated list of specific file names or wildcard patterns to skip")
+        form_layout.addRow("Ignored File Names:", self.txt_ignore_files)
+
+        self.txt_ignore_folders = QLineEdit()
+        self.txt_ignore_folders.setToolTip("Comma-separated list of folder names or wildcard patterns to skip")
+        form_layout.addRow("Ignored Folder Names:", self.txt_ignore_folders)
+
+        ignore_layout.addLayout(form_layout)
+
+        lbl_hint = QLabel("<small><i>Values are comma-separated and support wildcards (e.g., *.tmp, thumbs.*, etc.).</i></small>")
+        lbl_hint.setStyleSheet("color: #888888;")
+        ignore_layout.addWidget(lbl_hint)
+
+        btn_defaults = QPushButton("Restore Defaults")
+        btn_defaults.setFixedWidth(130)
+        btn_defaults.clicked.connect(self.restore_defaults)
+        ignore_layout.addWidget(btn_defaults, alignment=Qt.AlignmentFlag.AlignLeft)
+        ignore_layout.addStretch()
+
+        self.tabs.addTab(ignore_tab, "File Extensions to Ignore")
+        main_layout.addWidget(self.tabs)
+
+        # Dialog Buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        button_box.accepted.connect(self.save_and_close)
+        button_box.rejected.connect(self.reject)
+        main_layout.addWidget(button_box)
+
+        self.load_values()
+
+    def load_values(self):
+        if self.parent_app and hasattr(self.parent_app, 'settings'):
+            s = self.parent_app.settings
+            self.txt_ignore_types.setText(s.value("ignore_types", DEFAULT_IGNORE_TYPES))
+            self.txt_ignore_files.setText(s.value("ignore_files", DEFAULT_IGNORE_FILES))
+            self.txt_ignore_folders.setText(s.value("ignore_folders", DEFAULT_IGNORE_FOLDERS))
+
+    def restore_defaults(self):
+        self.txt_ignore_types.setText(DEFAULT_IGNORE_TYPES)
+        self.txt_ignore_files.setText(DEFAULT_IGNORE_FILES)
+        self.txt_ignore_folders.setText(DEFAULT_IGNORE_FOLDERS)
+
+    def save_and_close(self):
+        if self.parent_app and hasattr(self.parent_app, 'settings'):
+            s = self.parent_app.settings
+            s.setValue("ignore_types", self.txt_ignore_types.text().strip())
+            s.setValue("ignore_files", self.txt_ignore_files.text().strip())
+            s.setValue("ignore_folders", self.txt_ignore_folders.text().strip())
+        self.accept()
+
+
 class HashWorker(QThread):
     progress = pyqtSignal(int, int, str)
     verification_progress = pyqtSignal(str)
     finished = pyqtSignal(dict)
     verification_finished = pyqtSignal(dict)
     
-    def __init__(self, target_dir, algorithm, dist_subfolders, delete_subhashes=False, delete_primary_hash=False):
+    def __init__(self, target_dir, algorithm, dist_subfolders, delete_subhashes=False, delete_primary_hash=False,
+                 ignore_types="", ignore_files="", ignore_folders=""):
         super().__init__()
         self.target_dir = os.path.normpath(target_dir)
         self.algorithm = algorithm
         self.dist_subfolders = dist_subfolders
         self.delete_subhashes = delete_subhashes
         self.delete_primary_hash = delete_primary_hash
+        self.ignore_types = ignore_types
+        self.ignore_files = ignore_files
+        self.ignore_folders = ignore_folders
         
     def run(self):
         root_folder_name = os.path.basename(self.target_dir)
@@ -297,6 +411,8 @@ class HashWorker(QThread):
         # Clean existing subdirectory checksum files if requested (leaves root .hash file intact)
         if self.delete_subhashes:
             for root, dirs, files in os.walk(self.target_dir):
+                # Filter out ignored subdirectories dynamically
+                dirs[:] = [d for d in dirs if not is_ignored(d, is_dir=True, ignore_folders=self.ignore_folders)]
                 # Skip root folder to avoid deleting the master hash file
                 if os.path.normpath(root) == self.target_dir:
                     continue
@@ -324,11 +440,15 @@ class HashWorker(QThread):
             except Exception as e:
                 print(f"Error reading existing master hash: {e}")
 
-        # 2. Collect all non-checksum files
+        # 2. Collect all valid non-checksum and non-ignored files
         all_files = []
         for root, dirs, files in os.walk(self.target_dir):
+            # Exclude ignored directory branches from traversal
+            dirs[:] = [d for d in dirs if not is_ignored(d, is_dir=True, ignore_folders=self.ignore_folders)]
             for f in files:
-                if not f.lower().endswith(CHECKSUM_EXTS):
+                if not f.lower().endswith(CHECKSUM_EXTS) and not is_ignored(
+                    f, is_dir=False, ignore_types=self.ignore_types, ignore_files=self.ignore_files
+                ):
                     all_files.append(os.path.join(root, f))
 
         # 3. Read hashes from existing master file so we have the full record available
@@ -912,11 +1032,19 @@ class KryptDistApp(QMainWindow):
             if action.text() == saved_theme:
                 action.setChecked(True)
         
+        tools_menu.addSeparator()
+        pref_action = tools_menu.addAction("&Preferences")
+        pref_action.triggered.connect(self.show_preferences)
+
         help_menu = menu_bar.addMenu("&Help")
         manual_action = help_menu.addAction("Manual")
         manual_action.triggered.connect(self.show_manual)
         about_action = help_menu.addAction("About")
         about_action.triggered.connect(self.show_about)
+
+    def show_preferences(self):
+        dialog = PreferencesDialog(self)
+        dialog.exec()
 
     def apply_theme(self, theme_name):
         app = QApplication.instance()
@@ -1002,6 +1130,12 @@ class KryptDistApp(QMainWindow):
             f"only hashing new files and appending them to the hash files.</li>"
             f"<li><b>Delete Primary Hashes First:</b> Deletes any existing root primary <code>.hash</code> file before generating new checksums.</li>"
             f"<li><b>Delete Subdirectory Hashes First:</b> Cleans out existing subhashes across all subfolders prior to generation.</li>"
+            f"</ul>"
+            f"<h2>PREFERENCES &amp; IGNORED ITEMS</h2>"
+            f"<ul>"
+            f"<li><b>Ignore Rules:</b> Configure ignored file extensions, specific file names, and directories under <b>Tools &gt; Preferences</b>.</li>"
+            f"<li><b>Wildcard Support:</b> Patterns accept wildcards (e.g. <code>*.tmp</code>, <code>Thumbs.*</code>, <code>.Trash-*</code>) to cleanly exclude OS metadata, caches, and unwanted artifacts.</li>"
+            f"<li><b>Defaults:</b> Preloaded with comprehensive exclusion sets for existing checksum manifests, system volumes, OS caches, and media companion files.</li>"
             f"</ul>"
             f"<h2>SUPPORTED ALGORITHMS</h2>"
             f"<ul>"
@@ -1147,8 +1281,15 @@ class KryptDistApp(QMainWindow):
         delete_sub = self.check_delete_subhashes.isChecked()
         delete_primary = self.check_delete_primary.isChecked()
         
+        ignore_types = self.settings.value("ignore_types", DEFAULT_IGNORE_TYPES)
+        ignore_files = self.settings.value("ignore_files", DEFAULT_IGNORE_FILES)
+        ignore_folders = self.settings.value("ignore_folders", DEFAULT_IGNORE_FOLDERS)
+
         target_dir = targets[0] if targets else self.last_directory
-        self.worker = HashWorker(target_dir, algo, distribute, delete_sub, delete_primary)
+        self.worker = HashWorker(
+            target_dir, algo, distribute, delete_sub, delete_primary,
+            ignore_types=ignore_types, ignore_files=ignore_files, ignore_folders=ignore_folders
+        )
         self.worker.progress.connect(self.update_progress)
         self.worker.finished.connect(self.generation_complete)
         self.worker.start()
