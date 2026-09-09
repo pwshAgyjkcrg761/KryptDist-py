@@ -1,6 +1,6 @@
 # ==============================================================================
 # SCRIPT: KryptDist.py
-# VERSION: 2026.09.08__18.53.26
+# VERSION: 2026.09.08__21.10.56
 # TARGET: Python 3.14.5
 #
 # Copyright (C) 2026 pwshAgyjkcrg761
@@ -69,10 +69,15 @@ import os
 import json
 import hashlib
 import fnmatch
+import re
 import ctypes
 import ctypes.wintypes
 
-APP_VERSION = "2026.09.08__18.53.26"
+APP_VERSION = "2026.09.08__21.10.56"
+
+def natural_sort_key(s):
+    """Sort strings containing numbers in human/natural order safely across types."""
+    return [(0, int(t)) if t.isdigit() else (1, t.lower()) for t in re.split(r'(\d+)', str(s))]
 
 DEFAULT_IGNORE_TYPES = "hash,b3,blake3,b2,blake2,blake2b,blake2s,sha512,sha256,sha3,sha3-256,sha3-512,xx3,xxh3,xxh,sha1,sha,md5,sfv,crc32,crc,lnk,url,m3u,m3u8,pls,log,tmp,temp,bak,part,crdownload"
 DEFAULT_IGNORE_FILES = "desktop.ini,folder.jpg,.desktop,.directory,thumbs.db,ehthumbs.db,ehthumbs_vista.db,md5sums,md5sum.txt,sha256sums,sha256sum.txt,sha512sums,sha512sum.txt,checksums.txt,hashes.txt,.DS_Store,._.DS_Store,._*,~$*,pagefile.sys,hiberfil.sys,swapfile.sys,dumpstack.log.tmp"
@@ -771,14 +776,17 @@ class DropListWidget(QListWidget):
 
     def dropEvent(self, event):
         if event.mimeData().hasUrls():
+            all_paths = [self.item(i).text() for i in range(self.count())]
             for url in event.mimeData().urls():
                 file_path = os.path.normpath(url.toLocalFile()).replace('/', os.sep)
                 if file_path and os.path.exists(file_path):
                     if file_path.lower().endswith(CHECKSUM_EXTS):
                         continue
-                    existing = [self.item(i).text() for i in range(self.count())]
-                    if file_path not in existing:
-                        self.addItem(file_path)
+                    if file_path not in all_paths:
+                        all_paths.append(file_path)
+            all_paths.sort(key=natural_sort_key)
+            self.clear()
+            self.addItems(all_paths)
             event.acceptProposedAction()
         else:
             event.ignore()
@@ -817,6 +825,8 @@ class KryptDistApp(QMainWindow):
                 clean_p = os.path.abspath(arg.strip('"\''))
                 if os.path.exists(clean_p) and clean_p not in self.target_paths:
                     self.target_paths.append(clean_p)
+
+        self.target_paths.sort(key=natural_sort_key)
 
         self.init_ui()
         self.load_saved_settings()
@@ -909,6 +919,10 @@ class KryptDistApp(QMainWindow):
 
         # Progress Section
         self.status_label = QLabel("Status: Ready")
+        self.status_label.setWordWrap(True)
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        line_height = self.status_label.fontMetrics().lineSpacing()
+        self.status_label.setFixedHeight(line_height * 4 + 6)
         layout.addWidget(self.status_label)
         
         self.progress_bar = QProgressBar()
@@ -989,6 +1003,7 @@ class KryptDistApp(QMainWindow):
             self.last_directory = os.path.normpath(os.path.dirname(files[0])).replace('/', os.sep)
             self.settings.setValue("last_directory", self.last_directory)
             existing = [self.path_list.item(i).text() for i in range(self.path_list.count())]
+            files.sort(key=natural_sort_key)
             for f in files:
                 clean_p = os.path.normpath(f).replace('/', os.sep)
                 if not clean_p.lower().endswith(CHECKSUM_EXTS) and clean_p not in existing:
@@ -1297,7 +1312,17 @@ class KryptDistApp(QMainWindow):
     def update_progress(self, current, total, rel_path):
         self.progress_bar.setMaximum(total)
         self.progress_bar.setValue(current)
-        self.status_label.setText(f"Hashing [{current}/{total}]: {rel_path}")
+        
+        full_text = f"Hashing [{current}/{total}]: {rel_path}"
+        metrics = self.status_label.fontMetrics()
+        label_width = max(self.status_label.width() - 10, 200)
+        max_budget = label_width * 4
+
+        if metrics.horizontalAdvance(full_text) > max_budget:
+            elided = metrics.elidedText(full_text, Qt.TextElideMode.ElideMiddle, max_budget)
+            self.status_label.setText(elided)
+        else:
+            self.status_label.setText(full_text)
 
     def generation_complete(self, results):
         self.status_label.setText("Status: Writing hash files...")
