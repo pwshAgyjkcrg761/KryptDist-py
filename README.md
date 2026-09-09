@@ -12,16 +12,18 @@ KryptDist™ is a high-performance checksum generation and integrity verificatio
 The utility combines high-throughput hashing algorithms with intelligent directory traversal and validation routines.
 
 Key operational features include:
-1. **MultiHash & Distributed Subdirectory Hashes:** In MultiHash mode, KryptDist generates a root primary `.hash` file representing the entire directory hierarchy alongside individual `.hash` files inside each nested subdirectory in a single, efficient disk-read pass.
-2. **Multi-Engine Algorithm Suite:** Supports cutting-edge cryptographic hash functions (BLAKE3, BLAKE2b, BLAKE2s, SHA-512, SHA-256, SHA-3) alongside fast checksum and legacy algorithms (xx3 / xxHash3, SHA-1, MD5, SFV / CRC32).
-3. **Smart Incremental Caching:** Automatically parses pre-existing primary and subdirectory hash files, skipping previously verified files and appending only newly detected files to conserve time and disk I/O.
-4. **Configurable Exclusion & Ignore Engine:** Automatically filters out checksum files, temporary artifacts, OS metadata (e.g. `desktop.ini`, `thumbs.db`, `.DS_Store`), development caches (`__pycache__`, `.git`, `node_modules`), and system volumes. Full wildcard (`*`, `?`) matching is configurable via **Tools > Preferences**.
-5. **Pre-Generation Hash Cleaning:** Optional pre-execution controls allow automatically purging prior primary hash files, existing subdirectory hashes, or both before beginning a fresh hash pass.
-6. **Real-Time Verification OSD:** Passing checksum files via the command line, drag-and-drop, or the Windows **SendTo** menu triggers an instant verification pass monitored by a compact, draggable On-Screen Display widget with persistent screen positioning.
-7. **Headless CLI & Single-File Verification:** Features direct command-line arguments (`-v` / `--verify-file`) to verify individual files against local or parent hash containers headlessly with zero GUI overhead, returning standard process exit codes (`0` for intact, `2` for mismatch/missing) for integration with managers such as HashMan.
-8. **Automated Error Logging:** Detects hash mismatches, corrupted files, and missing assets during verification. Triggers a visual alert and compiles an error log report in `KryptDist_internal/logs/`, opening it automatically on Windows systems.
-9. **Drag & Drop Target Management:** Easily queue files and folders through an interactive drop target list with path controls for directory browsing, file selection, and individual item removal.
-10. **Persistent UI State & Theming:** Remembers window geometry, OSD screen coordinates, algorithm choices, processing options, ignore rules, and user-selected Dark, Light, or System-synced UI palettes.
+1. **Multi-Folder Batch Processing:** Queue multiple root folders or files simultaneously via Drag & Drop or Windows **SendTo**. KryptDist processes every target folder independently in a unified batch run, generating root master hashes and distributed subfolder sets for each target in a single disk-read pass.
+2. **MultiHash & Distributed Subdirectory Hashes:** In MultiHash mode, generates both a root primary `.hash` file representing the full folder tree and individual `.hash` files within each nested subdirectory without re-reading or re-hashing files from disk.
+3. **Multi-Engine Algorithm Suite:** Supports cutting-edge cryptographic hash functions (BLAKE3, BLAKE2b, BLAKE2s, SHA-512, SHA-256, SHA-3) alongside fast checksum and legacy algorithms (xx3 / xxHash3, SHA-1, MD5, SFV / CRC32).
+4. **Smart Incremental Caching:** Automatically parses pre-existing primary and subdirectory hash files, skipping previously verified files and appending only newly detected files to conserve time and disk I/O.
+5. **Collapsible Path Trees & Zero Horizontal Scroll:** Target lists and live hashing progress employ an expandable tree structure. Root items show clean file and folder names, while disclosure triangles (`▶` / `▼`) expand to reveal full, word-wrapped absolute paths without horizontal scrolling.
+6. **Global Expand/Collapse Header Toggle:** A dedicated header toggle (`▶` / `▼`) on **Target Files & Folders** allows instantly expanding or collapsing all queued target paths at once.
+7. **Configurable Exclusion & Ignore Engine:** Automatically filters out checksum files, temporary artifacts, OS metadata (e.g. `desktop.ini`, `thumbs.db`, `.DS_Store`), development caches (`__pycache__`, `.git`, `node_modules`), and system volumes. Full wildcard (`*`, `?`) matching is configurable via **Tools > Preferences**.
+8. **Pre-Generation Hash Cleaning:** Optional pre-execution controls allow automatically purging prior primary hash files, existing subdirectory hashes, or both before beginning a fresh hash pass.
+9. **Real-Time Verification OSD:** Passing checksum files via the command line, drag-and-drop, or the Windows **SendTo** menu triggers an instant verification pass monitored by a compact, draggable On-Screen Display widget with persistent screen positioning.
+10. **Headless CLI & Single-File Verification:** Features direct command-line arguments (`-v` / `--verify-file`) to verify individual files against local or parent hash containers headlessly with zero GUI overhead, returning standard process exit codes (`0` for intact, `2` for mismatch/missing) for integration with managers such as HashMan.
+11. **Automated Error Logging:** Detects hash mismatches, corrupted files, and missing assets during verification. Triggers a visual alert and compiles an error log report in `KryptDist_internal/logs/`, opening it automatically on Windows systems.
+12. **Persistent UI State & Theming:** Remembers window geometry, OSD screen coordinates, disclosure triangle expansion states, algorithm choices, processing options, ignore rules, and user-selected Dark, Light, or System-synced UI palettes.
 
 ---
 
@@ -29,9 +31,12 @@ Key operational features include:
 
 | Option / Feature | Description |
 | :--- | :--- |
+| **Batch Multi-Folder Hashing** | Processes multiple root folders and files independently in a single queued execution. |
 | **MultiHash Mode** | Generates a root primary `.hash` file and distributed subdirectory `.hash` files throughout the directory tree. |
 | **Primary Hash Only Mode** | Generates only the root directory's primary `.hash` file without distributing hashes to subfolders. |
 | **Incremental Smart Hashing** | Skips already-hashed relative paths recorded in existing checksum files and appends newly discovered files. |
+| **Collapsible Path Trees** | Tree-based target list and progress display showing clean item names with word-wrapped full path disclosure (`▶` / `▼`). |
+| **Header Expand/Collapse Toggle** | Instant batch expand/collapse control located on the **Target Files & Folders** section header. |
 | **Preferences & Ignore Rules** | Configures comma-separated extensions, filenames, and directory exclusions with wildcard support. |
 | **Delete Primary Hashes First** | Automatically deletes existing root `.hash` files before scanning and calculating new digests. |
 | **Delete Subdirectory Hashes First** | Traverses nested subfolders to remove existing checksum files while leaving primary hashes intact. |
@@ -88,4 +93,4 @@ This software is released under the **GNU General Public License v3**.
 ---
 > **Document Control**<br>
 > *This document is up-to-date with the following version of KryptDist™.*<br>
-> *2026.09.08__18.53.26*
+> *2026.09.09__10.20.31*
