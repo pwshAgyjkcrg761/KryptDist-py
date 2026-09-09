@@ -3,6 +3,8 @@
 
 ---
 
+![KryptDist Dark Mode Main Interface](images/KryptDist-py_dark_mode_main.png)
+
 ## Overview
 KryptDist™ is a high-performance checksum generation and integrity verification utility designed to produce and validate hierarchical checksum file sets across directories and nested subdirectories. It offers flexible multi-algorithm hashing, incremental updates for existing hash sets, and a streamlined On-Screen Display (OSD) verification workflow.
 
