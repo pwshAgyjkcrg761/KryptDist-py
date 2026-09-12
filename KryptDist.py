@@ -1,6 +1,6 @@
 # ==============================================================================
 # SCRIPT: KryptDist.py
-# VERSION: 2026.09.11__20.14.32
+# VERSION: 2026.09.12__00.23.48
 # TARGET: Python 3.14.5
 #
 # Copyright (C) 2026 pwshAgyjkcrg761
@@ -73,7 +73,7 @@ import re
 import ctypes
 import ctypes.wintypes
 
-APP_VERSION = "2026.09.11__20.14.32"
+APP_VERSION = "2026.09.12__00.23.48"
 
 def natural_sort_key(s):
     """Sort strings containing numbers in human/natural order safely across types."""
@@ -1411,8 +1411,10 @@ class KryptDistApp(QMainWindow):
             f"<ul>"
             f"<li><b>Single-File Verification:</b> Invoke with <code>-v &lt;file&gt;</code> or <code>--verify-file &lt;file&gt;</code> "
             f"for instant, headless verification against local or parent hash containers.</li>"
-            f"<li><b>Exit Codes:</b> Returns <code>0</code> when files match, or <code>2</code> on mismatch, missing files, or errors, "
-            f"enabling seamless integration with external managers like HashMan.</li>"
+            f"<li><b>Explicit Hash Manifest:</b> Use <code>--hash-file &lt;manifest.hash&gt;</code> alongside <code>-v</code> to test against a specific checksum manifest instead of automatic container discovery.</li>"
+            f"<li><b>Headless Mode:</b> Pass <code>--headless</code> (or <code>-headless</code>, <code>/headless</code>) during container verification to suppress all GUI prompts/dialogs and automatically write failures to <code>KryptDist_internal/logs/</code>.</li>"
+            f"<li><b>Exit Codes:</b> Single-file verification returns <code>0</code> on match, <code>2</code> on mismatch/missing. Headless container verification returns <code>0</code> on success, <code>1</code> on error.</li>"
+            f"<li><b>Preloaded Targets:</b> Pass one or more file or directory paths as CLI arguments to launch the GUI preloaded with those targets.</li>"
             f"</ul>"
         )
 
@@ -1815,7 +1817,6 @@ if __name__ == "__main__":
         sys.exit(2)
 
     app = QApplication(sys.argv)
-    app.setQuitOnLastWindowClosed(False)
     app.setStyle("Fusion")
     window = KryptDistApp()
     if not hasattr(window, 'hash_files_passed') or not window.hash_files_passed:
