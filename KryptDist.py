@@ -1,6 +1,6 @@
 # ==============================================================================
 # SCRIPT: KryptDist.py
-# VERSION: 2026.09.09__12.50.46
+# VERSION: 2026.09.11__20.14.32
 # TARGET: Python 3.14.5
 #
 # Copyright (C) 2026 pwshAgyjkcrg761
@@ -73,7 +73,7 @@ import re
 import ctypes
 import ctypes.wintypes
 
-APP_VERSION = "2026.09.09__12.50.46"
+APP_VERSION = "2026.09.11__20.14.32"
 
 def natural_sort_key(s):
     """Sort strings containing numbers in human/natural order safely across types."""
@@ -582,6 +582,8 @@ class HashWorker(QThread):
         self.finished.emit(all_targets_data)
 
     def verify_hash_files(self, hash_file_paths):
+        import time
+
         verification_results = {
             "total_checked": 0,
             "passed": 0,
@@ -589,146 +591,187 @@ class HashWorker(QThread):
             "missing": []
         }
 
+        items_to_verify = []
+        total_verify_bytes = 0
+
         for hash_file in hash_file_paths:
             base_dir = os.path.dirname(hash_file)
             ext = os.path.splitext(hash_file)[1].lower()
             if ext in (".sha3", ".sha3-256", ".sha3-512"):
-                current_algo = "SHA-3"
+                file_algo = "SHA-3"
             elif ext == ".sha256":
-                current_algo = "SHA-256"
+                file_algo = "SHA-256"
             elif ext == ".sha512":
-                current_algo = "SHA-512"
+                file_algo = "SHA-512"
             elif ext == ".md5":
-                current_algo = "MD5"
+                file_algo = "MD5"
             elif ext in (".sha1", ".sha"):
-                current_algo = "SHA-1"
+                file_algo = "SHA-1"
             elif ext in (".sfv", ".crc32", ".crc"):
-                current_algo = "SFV / CRC32"
+                file_algo = "SFV / CRC32"
             elif ext in (".xx3", ".xxh3", ".xxh"):
-                current_algo = "xx3"
+                file_algo = "xx3"
             elif ext in (".b2", ".blake2", ".blake2b"):
-                current_algo = "BLAKE2b"
+                file_algo = "BLAKE2b"
             elif ext == ".blake2s":
-                current_algo = "BLAKE2s"
+                file_algo = "BLAKE2s"
             else:
-                current_algo = "BLAKE3"
-            
+                file_algo = "BLAKE3"
+
             try:
                 with open(hash_file, 'r', encoding='utf-8') as f:
                     lines = f.readlines()
-
-                for line in lines:
-                    line_str = line.strip()
-                    line_lower = line_str.lower()
-                    
-                    # Detect algorithm declarations and Corz Checksum headers
-                    if line_lower.startswith("# algorithm:") or line_lower.startswith("; algorithm:"):
-                        current_algo = line_str.split(":", 1)[1].strip()
-                        continue
-                    if "blake2" in line_lower:
-                        current_algo = "BLAKE2s"
-                        if line_str.startswith('#') or line_str.startswith(';'):
-                            continue
-                    if "made with checksum" in line_lower:
-                        # Corz checksum signature
-                        if current_algo == "BLAKE3":
-                            current_algo = "BLAKE2s"
-                        continue
-                    if not line_str or line_str.startswith('#') or line_str.startswith(';'):
-                        continue
-
-                    tokens = line_str.split()
-                    if len(tokens) >= 2:
-                        first_tok = tokens[0].strip()
-                        last_tok = tokens[-1].strip()
-                        is_hex = lambda s: all(c in '0123456789abcdefABCDEF' for c in s)
-
-                        if len(first_tok) in (8, 16, 32, 40, 64, 128) and is_hex(first_tok):
-                            expected_hash = first_tok
-                            rel_path = line_str.split(maxsplit=1)[1].lstrip('*').strip()
-                        elif len(last_tok) == 8 and is_hex(last_tok):
-                            expected_hash = last_tok
-                            rel_path = line_str.rsplit(maxsplit=1)[0].lstrip('*').strip()
-                        else:
-                            # Not a valid checksum line; skip
-                            continue
-
-                        full_path = os.path.join(base_dir, rel_path)
-
-                        self.verification_progress.emit(rel_path)
-                        verification_results["total_checked"] += 1
-
-                        if not os.path.exists(full_path):
-                            verification_results["missing"].append((rel_path, hash_file))
-                            continue
-
-                        # Resolve effective algorithm using header state & length heuristics
-                        h_len = len(expected_hash)
-                        algo = current_algo
-                        if h_len == 8:
-                            algo = "SFV / CRC32"
-                        elif h_len == 16:
-                            algo = "xx3"
-                        elif h_len == 32:
-                            algo = "MD5"
-                        elif h_len == 40:
-                            algo = "SHA-1"
-                        elif h_len == 64:
-                            # 256-bit digest: keep current_algo if it is a 256-bit engine, otherwise default to BLAKE3
-                            algo_u = current_algo.upper()
-                            if not any(k in algo_u for k in ["BLAKE3", "256", "BLAKE2S", "SHA-3", "SHA3"]):
-                                algo = "BLAKE3"
-                        elif h_len == 128:
-                            # 512-bit digest: keep current_algo if it is a 512-bit engine, otherwise default to BLAKE2b
-                            algo_u = current_algo.upper()
-                            if not any(k in algo_u for k in ["BLAKE2", "512"]):
-                                algo = "BLAKE2b"
-
-                        try:
-                            algo_upper = algo.upper()
-                            if "CRC" in algo_upper or "SFV" in algo_upper:
-                                crc_val = 0
-                                with open(full_path, 'rb') as vf:
-                                    while chunk := vf.read(65536):
-                                        crc_val = zlib.crc32(chunk, crc_val)
-                                calculated_hash = f"{crc_val & 0xFFFFFFFF:08x}"
-                            else:
-                                if "BLAKE3" in algo_upper and HAS_BLAKE3:
-                                    hasher = blake3.blake3()
-                                elif "BLAKE2S" in algo_upper:
-                                    hasher = hashlib.blake2s()
-                                elif "BLAKE2" in algo_upper:
-                                    hasher = hashlib.blake2b()
-                                elif "512" in algo_upper and "SHA" in algo_upper:
-                                    hasher = hashlib.sha512()
-                                elif "SHA-3" in algo_upper or "SHA3" in algo_upper:
-                                    hasher = hashlib.sha3_256()
-                                elif "256" in algo_upper and "SHA" in algo_upper:
-                                    hasher = hashlib.sha256()
-                                elif ("XX3" in algo_upper or "XXH3" in algo_upper) and HAS_XXHASH:
-                                    hasher = xxhash.xxh3_64()
-                                elif "SHA-1" in algo_upper or "SHA1" in algo_upper:
-                                    hasher = hashlib.sha1()
-                                elif "MD5" in algo_upper:
-                                    hasher = hashlib.md5()
-                                else:
-                                    hasher = hashlib.blake2b()
-
-                                with open(full_path, 'rb') as vf:
-                                    while chunk := vf.read(65536):
-                                        hasher.update(chunk)
-                                calculated_hash = hasher.hexdigest()
-
-                            if calculated_hash.lower() == expected_hash.lower():
-                                verification_results["passed"] += 1
-                            else:
-                                verification_results["failed"].append((rel_path, expected_hash, calculated_hash, hash_file))
-                        except Exception as e:
-                            verification_results["failed"].append((rel_path, expected_hash, str(e), hash_file))
-
             except Exception as e:
                 print(f"Error reading hash file {hash_file}: {e}")
+                continue
 
+            current_algo = file_algo
+            for line in lines:
+                line_str = line.strip()
+                line_lower = line_str.lower()
+
+                # Detect algorithm declarations and Corz Checksum headers
+                if line_lower.startswith("# algorithm:") or line_lower.startswith("; algorithm:"):
+                    current_algo = line_str.split(":", 1)[1].strip()
+                    continue
+                if "blake2" in line_lower:
+                    current_algo = "BLAKE2s"
+                    if line_str.startswith('#') or line_str.startswith(';'):
+                        continue
+                if "made with checksum" in line_lower:
+                    if current_algo == "BLAKE3":
+                        current_algo = "BLAKE2s"
+                    continue
+                if not line_str or line_str.startswith('#') or line_str.startswith(';'):
+                    continue
+
+                tokens = line_str.split()
+                if len(tokens) >= 2:
+                    first_tok = tokens[0].strip()
+                    last_tok = tokens[-1].strip()
+                    is_hex = lambda s: all(c in '0123456789abcdefABCDEF' for c in s)
+
+                    if len(first_tok) in (8, 16, 32, 40, 64, 128) and is_hex(first_tok):
+                        expected_hash = first_tok
+                        rel_path = line_str.split(maxsplit=1)[1].lstrip('*').strip()
+                    elif len(last_tok) == 8 and is_hex(last_tok):
+                        expected_hash = last_tok
+                        rel_path = line_str.rsplit(maxsplit=1)[0].lstrip('*').strip()
+                    else:
+                        continue
+
+                    full_path = os.path.join(base_dir, rel_path)
+                    f_size = os.path.getsize(full_path) if os.path.isfile(full_path) else 0
+                    total_verify_bytes += f_size
+                    items_to_verify.append((hash_file, base_dir, rel_path, full_path, expected_hash, current_algo, f_size))
+
+        start_time = time.time()
+        bytes_hashed = 0
+        last_emit_time = 0
+
+        for hash_file, base_dir, rel_path, full_path, expected_hash, current_algo, f_size in items_to_verify:
+            if self._is_cancelled:
+                return
+
+            self.verification_progress.emit(rel_path)
+            verification_results["total_checked"] += 1
+
+            if not os.path.exists(full_path):
+                verification_results["missing"].append((rel_path, hash_file))
+                continue
+
+            h_len = len(expected_hash)
+            algo = current_algo
+            if h_len == 8:
+                algo = "SFV / CRC32"
+            elif h_len == 16:
+                algo = "xx3"
+            elif h_len == 32:
+                algo = "MD5"
+            elif h_len == 40:
+                algo = "SHA-1"
+            elif h_len == 64:
+                algo_u = current_algo.upper()
+                if not any(k in algo_u for k in ["BLAKE3", "256", "BLAKE2S", "SHA-3", "SHA3"]):
+                    algo = "BLAKE3"
+            elif h_len == 128:
+                algo_u = current_algo.upper()
+                if not any(k in algo_u for k in ["BLAKE2", "512"]):
+                    algo = "BLAKE2b"
+
+            def _emit_stream(b_done, b_tot, el_sec, eta_s, r_path):
+                if sys.stdout is not None:
+                    try:
+                        sys.stdout.write(f"VERIFY_PROGRESS:{b_done}:{b_tot}:{el_sec}:{eta_s}:{r_path}\n")
+                        sys.stdout.flush()
+                    except Exception:
+                        pass
+
+            try:
+                algo_upper = algo.upper()
+                if "CRC" in algo_upper or "SFV" in algo_upper:
+                    crc_val = 0
+                    with open(full_path, 'rb') as vf:
+                        while chunk := vf.read(65536):
+                            crc_val = zlib.crc32(chunk, crc_val)
+                            bytes_hashed += len(chunk)
+                            now = time.time()
+                            if now - last_emit_time >= 0.25:
+                                elapsed = max(1, int(now - start_time))
+                                speed = bytes_hashed / elapsed
+                                eta = int((total_verify_bytes - bytes_hashed) / speed) if speed > 0 and total_verify_bytes > bytes_hashed else 0
+                                _emit_stream(bytes_hashed, total_verify_bytes, elapsed, eta, rel_path)
+                                last_emit_time = now
+                    calculated_hash = f"{crc_val & 0xFFFFFFFF:08x}"
+                else:
+                    if "BLAKE3" in algo_upper and HAS_BLAKE3:
+                        hasher = blake3.blake3()
+                    elif "BLAKE2S" in algo_upper:
+                        hasher = hashlib.blake2s()
+                    elif "BLAKE2" in algo_upper:
+                        hasher = hashlib.blake2b()
+                    elif "512" in algo_upper and "SHA" in algo_upper:
+                        hasher = hashlib.sha512()
+                    elif "SHA-3" in algo_upper or "SHA3" in algo_upper:
+                        hasher = hashlib.sha3_256()
+                    elif "256" in algo_upper and "SHA" in algo_upper:
+                        hasher = hashlib.sha256()
+                    elif ("XX3" in algo_upper or "XXH3" in algo_upper) and HAS_XXHASH:
+                        hasher = xxhash.xxh3_64()
+                    elif "SHA-1" in algo_upper or "SHA1" in algo_upper:
+                        hasher = hashlib.sha1()
+                    elif "MD5" in algo_upper:
+                        hasher = hashlib.md5()
+                    else:
+                        hasher = hashlib.blake2b()
+
+                    with open(full_path, 'rb') as vf:
+                        while chunk := vf.read(65536):
+                            hasher.update(chunk)
+                            bytes_hashed += len(chunk)
+                            now = time.time()
+                            if now - last_emit_time >= 0.25:
+                                elapsed = max(1, int(now - start_time))
+                                speed = bytes_hashed / elapsed
+                                eta = int((total_verify_bytes - bytes_hashed) / speed) if speed > 0 and total_verify_bytes > bytes_hashed else 0
+                                _emit_stream(bytes_hashed, total_verify_bytes, elapsed, eta, rel_path)
+                                last_emit_time = now
+                    calculated_hash = hasher.hexdigest()
+
+                if calculated_hash.lower() == expected_hash.lower():
+                    verification_results["passed"] += 1
+                else:
+                    verification_results["failed"].append((rel_path, expected_hash, calculated_hash, hash_file))
+            except Exception as e:
+                verification_results["failed"].append((rel_path, expected_hash, str(e), hash_file))
+
+        elapsed_total = max(1, int(time.time() - start_time))
+        if sys.stdout is not None:
+            try:
+                sys.stdout.write(f"VERIFY_PROGRESS:{total_verify_bytes}:{total_verify_bytes}:{elapsed_total}:0:Done\n")
+                sys.stdout.flush()
+            except Exception:
+                pass
         self.verification_finished.emit(verification_results)
 
 
@@ -943,11 +986,16 @@ class KryptDistApp(QMainWindow):
         self.apply_theme(self.current_theme)
         self.last_directory = os.path.normpath(self.settings.value("last_directory", os.getcwd()))
         
+        self.is_headless = any(arg.lower() in ("-headless", "--headless", "/headless") for arg in sys.argv)
+
         # Parse command line inputs (e.g. from SendTo or file drag onto script)
         self.target_paths = []
         if len(sys.argv) > 1:
             for arg in sys.argv[1:]:
-                clean_p = os.path.abspath(arg.strip('"\''))
+                clean_arg = arg.strip('"\'')
+                if clean_arg.startswith("-") or clean_arg.startswith("/"):
+                    continue
+                clean_p = os.path.abspath(clean_arg)
                 if os.path.exists(clean_p) and clean_p not in self.target_paths:
                     self.target_paths.append(clean_p)
 
@@ -1444,6 +1492,33 @@ class KryptDistApp(QMainWindow):
             QApplication.processEvents()
             self.osd.close()
 
+            if getattr(self, 'is_headless', False):
+                logs_dir = os.path.join(internal_dir, "logs")
+                os.makedirs(logs_dir, exist_ok=True)
+
+                from datetime import datetime
+                log_filename = f"Hash_Verification_ERRORS_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+                log_path = os.path.join(logs_dir, log_filename)
+
+                try:
+                    with open(log_path, 'w', encoding='utf-8') as lf:
+                        lf.write("======================================================================\n")
+                        lf.write(f"KryptDist Verification Error Log - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                        lf.write("======================================================================\n\n")
+
+                        if has_failed:
+                            lf.write("[CORRUPTED / HASH MISMATCH FILES]\n")
+                            for item in results["failed"]:
+                                lf.write(f"File: {item[0]}\n  Expected  : {item[1]}\n  Calculated: {item[2]}\n  Hash File : {item[3]}\n\n")
+
+                        if has_missing:
+                            lf.write("[MISSING FILES]\n")
+                            for item in results["missing"]:
+                                lf.write(f"File: {item[0]}\n  Hash File : {item[1]}\n\n")
+                except Exception as e:
+                    print(f"Error writing log file: {e}")
+                sys.exit(1)
+
             msg = (
                 f"Verification completed with ERRORS!\n\n"
                 f"Corrupted Files: {len(results['failed'])}\n"
@@ -1451,6 +1526,7 @@ class KryptDistApp(QMainWindow):
                 "Would you like to generate and view an error log?"
             )
             msg_box = QMessageBox(self if self.isVisible() else None)
+            msg_box.setWindowFlags(msg_box.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
             msg_box.setWindowTitle("KryptDist - Verification Errors Detected")
             msg_box.setText(msg)
             msg_box.setIconPixmap(get_status_pixmap("error"))
@@ -1491,7 +1567,10 @@ class KryptDistApp(QMainWindow):
             sys.exit(1)
         else:
             self.osd.close()
+            if getattr(self, 'is_headless', False):
+                sys.exit(0)
             msg_box = QMessageBox(self if self.isVisible() else None)
+            msg_box.setWindowFlags(msg_box.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
             msg_box.setWindowTitle("KryptDist - Hash Verification")
             msg_box.setText("Hash checking successful. All data is 100% intact.")
             msg_box.setIconPixmap(get_status_pixmap("success"))
@@ -1736,6 +1815,7 @@ if __name__ == "__main__":
         sys.exit(2)
 
     app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
     app.setStyle("Fusion")
     window = KryptDistApp()
     if not hasattr(window, 'hash_files_passed') or not window.hash_files_passed:
