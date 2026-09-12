@@ -26,7 +26,7 @@ Key operational features include:
 10. **Pre-Generation Hash Cleaning:** Optional pre-execution controls allow automatically purging prior primary hash files, existing subdirectory hashes, or both before beginning a fresh hash pass.
 11. **Themed Verification OSD:** Passing checksum files via the command line, drag-and-drop, or the Windows **SendTo** menu triggers an instant verification pass monitored by a compact, draggable On-Screen Display widget with application branding that dynamically adapts to Dark, Light, or System themes.
 12. **Status Badges & Interactive Error Logging:** Verification completion dialogs display custom visual badges (green checkmark for intact data, red X for corruption/mismatch). If errors occur, users are prompted whether to generate and open an error log report in `KryptDist_internal/logs/`.
-13. **Headless CLI & Single-File Verification:** Features direct command-line arguments (`-v` / `--verify-file`) to verify individual files against local or parent hash containers headlessly with zero GUI overhead, returning standard process exit codes (`0` for intact, `2` for mismatch/missing) for integration with managers such as HashMan.
+13. **Headless CLI & Single-File Verification:** Features direct command-line arguments (`-v` / `--verify-file`) with optional explicit manifest targeting (`--hash-file`) to verify individual files headlessly with zero GUI overhead, returning standard process exit codes (`0` for intact, `2` for mismatch/missing) for integration with managers such as HashMan. Container verification also supports `--headless` execution, auto-logging errors and exiting with code `0` or `1`.
 14. **Persistent UI State & Theming:** Remembers window geometry, OSD screen coordinates, disclosure triangle expansion states, algorithm choices, processing options, ignore rules, and user-selected Dark, Light, or System-synced UI palettes.
 
 ---
@@ -48,7 +48,7 @@ Key operational features include:
 | **Delete Subdirectory Hashes First** | Traverses nested subfolders to remove existing checksum files while leaving primary hashes intact. |
 | **Themed Verification OSD** | A lightweight, branded status overlay providing live feedback that dynamically matches Dark/Light themes. |
 | **Status Badges & Error Logging** | Custom visual checkmark / error badges and prompt-based logging for verification mismatches. |
-| **Headless CLI Verification** | Verifies individual line items via `-v <file>` without initializing the GUI, returning standard exit codes (`0` or `2`). |
+| **Headless CLI Verification** | Verifies single files via `-v` / `--verify-file` or containers via `--headless`, supporting explicit `--hash-file` targeting and standard exit codes. |
 | **Theme Engine** | Full support for Dark, Light, and System-synced palettes via a customized `QPalette` implementation. |
 
 ---
@@ -66,6 +66,18 @@ python.exe KryptDist.py --verify-file "target_file.mkv" --hash-file "custom_name
 ### Container Verification (OSD Mode)
 ```text
 python.exe KryptDist.py "path/to/folder.hash"
+```
+
+### Headless Container Verification
+```text
+python.exe KryptDist.py --headless "path/to/folder.hash"
+```
+* **Exit Code `0`:** All files verified and intact.
+* **Exit Code `1`:** Verification failures or missing files detected (error report automatically written to `KryptDist_internal/logs/`).
+
+### Launch GUI with Preloaded Targets
+```text
+python.exe KryptDist.py "path/to/folder1" "path/to/folder2" "path/to/file.ext"
 ```
 
 ---
@@ -99,4 +111,4 @@ This software is released under the **GNU General Public License v3**.
 ---
 > **Document Control**<br>
 > *This document is up-to-date with the following version of KryptDist™.*<br>
-> *2026.09.09__12.50.46*
+> *2026.09.12__00.23.48*
