@@ -1,6 +1,6 @@
 # ==============================================================================
 # SCRIPT: KryptDist.py
-# VERSION: 2026.09.13__07.05.27
+# VERSION: 2026.09.13__08.01.19
 # TARGET: Python 3.14.5
 #
 # Copyright (C) 2026 pwshAgyjkcrg761
@@ -73,7 +73,7 @@ import re
 import ctypes
 import ctypes.wintypes
 
-APP_VERSION = "2026.09.13__07.05.27"
+APP_VERSION = "2026.09.13__08.01.19"
 
 def natural_sort_key(s):
     """Sort strings containing numbers in human/natural order safely across types."""
@@ -134,7 +134,7 @@ try:
 except ImportError:
     HAS_XXHASH = False
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QDir
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QDir, QTimer
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QPushButton, QFileDialog, QLabel, QMessageBox, 
                              QDialog, QCheckBox, QTextBrowser, QDialogButtonBox,
@@ -1015,6 +1015,21 @@ class AddFilesFoldersDialog(QDialog):
         initial_dir = start_dir if start_dir and os.path.exists(start_dir) else os.path.expanduser("~")
         self.set_current_directory(initial_dir)
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(150, self._initial_scroll_to_selected)
+
+    def _initial_scroll_to_selected(self):
+        if hasattr(self, 'current_dir'):
+            left_idx = self.folder_model.index(self.current_dir)
+            if left_idx.isValid():
+                parent = left_idx.parent()
+                while parent.isValid():
+                    self.tree_left.expand(parent)
+                    parent = parent.parent()
+                self.tree_left.setCurrentIndex(left_idx)
+                self.tree_left.scrollTo(left_idx, QAbstractItemView.ScrollHint.PositionAtCenter)
+
     def set_current_directory(self, dir_path):
         clean_path = os.path.normpath(os.path.abspath(dir_path))
         if os.path.exists(clean_path) and os.path.isdir(clean_path):
@@ -1025,12 +1040,14 @@ class AddFilesFoldersDialog(QDialog):
             right_idx = self.file_model.setRootPath(self.current_dir)
             self.tree_right.setRootIndex(right_idx)
 
-            # Sync left tree view selection and expansion
+            # Expand and select in left view
             left_idx = self.folder_model.index(self.current_dir)
             if left_idx.isValid():
+                parent = left_idx.parent()
+                while parent.isValid():
+                    self.tree_left.expand(parent)
+                    parent = parent.parent()
                 self.tree_left.setCurrentIndex(left_idx)
-                self.tree_left.scrollTo(left_idx)
-                self.tree_left.expand(left_idx)
 
     def navigate_up(self):
         parent_dir = os.path.dirname(self.current_dir)
