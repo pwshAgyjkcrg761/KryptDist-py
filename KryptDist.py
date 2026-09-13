@@ -1,6 +1,6 @@
 # ==============================================================================
 # SCRIPT: KryptDist.py
-# VERSION: 2026.09.12__00.23.48
+# VERSION: 2026.09.13__07.05.27
 # TARGET: Python 3.14.5
 #
 # Copyright (C) 2026 pwshAgyjkcrg761
@@ -73,14 +73,14 @@ import re
 import ctypes
 import ctypes.wintypes
 
-APP_VERSION = "2026.09.12__00.23.48"
+APP_VERSION = "2026.09.13__07.05.27"
 
 def natural_sort_key(s):
     """Sort strings containing numbers in human/natural order safely across types."""
     return [(0, int(t)) if t.isdigit() else (1, t.lower()) for t in re.split(r'(\d+)', str(s))]
 
 DEFAULT_IGNORE_TYPES = "hash,b3,blake3,b2,blake2,blake2b,blake2s,sha512,sha256,sha3,sha3-256,sha3-512,xx3,xxh3,xxh,sha1,sha,md5,sfv,crc32,crc,lnk,url,m3u,m3u8,pls,log,tmp,temp,bak,part,crdownload"
-DEFAULT_IGNORE_FILES = "desktop.ini,folder.jpg,.desktop,.directory,thumbs.db,ehthumbs.db,ehthumbs_vista.db,md5sums,md5sum.txt,sha256sums,sha256sum.txt,sha512sums,sha512sum.txt,checksums.txt,hashes.txt,.DS_Store,._.DS_Store,._*,~$*,pagefile.sys,hiberfil.sys,swapfile.sys,dumpstack.log.tmp"
+DEFAULT_IGNORE_FILES = "desktop.ini,folder.jpg,*-thumb.jpg,*-thumb.png,.desktop,.directory,thumbs.db,ehthumbs.db,ehthumbs_vista.db,md5sums,md5sum.txt,sha256sums,sha256sum.txt,sha512sums,sha512sum.txt,checksums.txt,hashes.txt,.DS_Store,._.DS_Store,._*,~$*,pagefile.sys,hiberfil.sys,swapfile.sys,dumpstack.log.tmp"
 DEFAULT_IGNORE_FOLDERS = "RECYCLER,$Recycle.Bin,System Volume Information,.Spotlight-V100,.Trashes,.fseventsd,.Trash-*,__pycache__,.pytest_cache,.git,.svn,.hg,node_modules"
 
 def matches_pattern_list(name, pattern_csv):
@@ -134,14 +134,16 @@ try:
 except ImportError:
     HAS_XXHASH = False
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QDir
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                              QPushButton, QFileDialog, QLabel, QMessageBox, 
                              QDialog, QCheckBox, QTextBrowser, QDialogButtonBox,
                              QComboBox, QProgressBar, QHBoxLayout, QListWidget,
                              QTabWidget, QLineEdit, QFormLayout, QTreeWidget,
-                             QTreeWidgetItem)
-from PyQt6.QtGui import QActionGroup, QPalette, QColor, QIcon, QPixmap, QPainter, QPen
+                             QTreeWidgetItem, QSplitter, QTreeView,
+                             QAbstractItemView, QHeaderView)
+from PyQt6.QtGui import (QActionGroup, QPalette, QColor, QIcon, QPixmap, QPainter, 
+                         QPen, QFileSystemModel)
 import ctypes
 
 def get_status_pixmap(status="success", size=48):
@@ -523,16 +525,44 @@ class HashWorker(QThread):
                 }
             else:
                 f_path = target
-                target_dir = os.path.dirname(f_path)
+                file_base = os.path.splitext(f_path)[0]
+                file_hash_path = f"{file_base}.hash"
+
+                # Clean existing individual file .hash if requested
+                if self.delete_primary_hash and os.path.exists(file_hash_path):
+                    try:
+                        os.remove(file_hash_path)
+                    except Exception as e:
+                        print(f"Error removing file hash: {e}")
+
+                existing_entries = set()
+                all_known_hashes = {}
+                if os.path.exists(file_hash_path):
+                    try:
+                        with open(file_hash_path, 'r', encoding='utf-8') as f:
+                            for line in f:
+                                line = line.strip()
+                                if line and not line.startswith('#'):
+                                    parts = line.split(maxsplit=1)
+                                    if len(parts) == 2:
+                                        h_val = parts[0].strip()
+                                        rel_p = os.path.normpath(parts[1].lstrip('*').strip())
+                                        existing_entries.add(rel_p)
+                                        all_known_hashes[rel_p] = h_val
+                    except Exception as e:
+                        print(f"Error reading existing file hash: {e}")
+
                 rel_p = os.path.basename(f_path)
-                total_files_to_hash.append((target_dir, f_path, rel_p))
-                all_targets_data.setdefault(target_dir, {
+                is_new = rel_p not in existing_entries
+                if is_new:
+                    total_files_to_hash.append((f_path, f_path, rel_p))
+
+                all_targets_data[f_path] = {
                     "is_dir": False,
-                    "known": {},
-                    "results": {},
-                    "new_count": 0
-                })
-                all_targets_data[target_dir]["new_count"] += 1
+                    "known": all_known_hashes,
+                    "results": dict(all_known_hashes),
+                    "new_count": 1 if is_new else 0
+                }
 
         total_files = len(total_files_to_hash)
 
@@ -890,6 +920,155 @@ class VerificationOSD(QWidget):
         self.lbl_file.setText("KryptDist | CORRUPTION DETECTED!")
 
 
+class AddFilesFoldersDialog(QDialog):
+    """Dual-pane file & folder explorer picker dialog supporting simultaneous selection."""
+    def __init__(self, start_dir=None, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Add Files & Folders")
+        self.resize(800, 480)
+
+        script_dir = os.path.dirname(os.path.realpath(__file__))
+        icon_path = os.path.join(script_dir, "KryptDist_internal", "icons", "KryptDist_ghost_icon.svg")
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
+
+        layout = QVBoxLayout(self)
+
+        # 1. Top Navigation Bar
+        nav_layout = QHBoxLayout()
+        self.btn_up = QPushButton("⬆ Up")
+        self.btn_up.setFixedWidth(65)
+        self.btn_up.clicked.connect(self.navigate_up)
+        nav_layout.addWidget(self.btn_up)
+
+        self.txt_path = QLineEdit()
+        self.txt_path.returnPressed.connect(self.navigate_to_text)
+        nav_layout.addWidget(self.txt_path, 1)
+
+        layout.addLayout(nav_layout)
+
+        # 2. Splitter: Left (Drives & Folders Tree) and Right (Contents View)
+        self.splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # Left Pane: Drives & Folder Tree
+        self.folder_model = QFileSystemModel()
+        self.folder_model.setFilter(QDir.Filter.Dirs | QDir.Filter.NoDotAndDotDot | QDir.Filter.Drives)
+        self.folder_model.setRootPath("")
+
+        self.tree_left = QTreeView()
+        self.tree_left.setModel(self.folder_model)
+        self.tree_left.setHeaderHidden(False)
+        self.tree_left.header().setStretchLastSection(True)
+        # Hide Size, Type, Date Modified columns in left navigation pane
+        for col in range(1, 4):
+            self.tree_left.hideColumn(col)
+        self.tree_left.clicked.connect(self.on_left_item_clicked)
+
+        # Right Pane: Folder Contents View
+        self.file_model = QFileSystemModel()
+        self.file_model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot)
+        self.file_model.setRootPath("")
+
+        self.tree_right = QTreeView()
+        self.tree_right.setModel(self.file_model)
+        self.tree_right.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.tree_right.setSortingEnabled(True)
+        self.tree_right.header().setSectionsClickable(True)
+        self.tree_right.header().setSortIndicatorShown(True)
+        self.tree_right.sortByColumn(0, Qt.SortOrder.AscendingOrder)
+        self.tree_right.doubleClicked.connect(self.on_right_item_double_clicked)
+        self.tree_right.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.tree_right.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        self.tree_right.header().setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        self.tree_right.header().setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+        self.tree_right.setColumnWidth(1, 80)
+        self.tree_right.setColumnWidth(2, 90)
+        self.tree_right.setColumnWidth(3, 130)
+
+        self.splitter.addWidget(self.tree_left)
+        self.splitter.addWidget(self.tree_right)
+        self.splitter.setStretchFactor(0, 1)
+        self.splitter.setStretchFactor(1, 2)
+        self.splitter.setSizes([260, 520])
+
+        layout.addWidget(self.splitter, 1)
+
+        # 3. Bottom Action Buttons
+        btn_layout = QHBoxLayout()
+        lbl_hint = QLabel("<small><i>Hold Ctrl or Shift to select multiple files and folders at once.</i></small>")
+        lbl_hint.setStyleSheet("color: #888888;")
+        btn_layout.addWidget(lbl_hint)
+        btn_layout.addStretch()
+
+        self.btn_add = QPushButton("Add Selected")
+        self.btn_add.setStyleSheet("font-weight: bold; padding: 4px 15px;")
+        self.btn_add.clicked.connect(self.accept)
+        btn_layout.addWidget(self.btn_add)
+
+        self.btn_cancel = QPushButton("Cancel")
+        self.btn_cancel.clicked.connect(self.reject)
+        btn_layout.addWidget(self.btn_cancel)
+
+        layout.addLayout(btn_layout)
+
+        # Set initial directory
+        initial_dir = start_dir if start_dir and os.path.exists(start_dir) else os.path.expanduser("~")
+        self.set_current_directory(initial_dir)
+
+    def set_current_directory(self, dir_path):
+        clean_path = os.path.normpath(os.path.abspath(dir_path))
+        if os.path.exists(clean_path) and os.path.isdir(clean_path):
+            self.current_dir = clean_path
+            self.txt_path.setText(self.current_dir)
+
+            # Sync right pane contents view
+            right_idx = self.file_model.setRootPath(self.current_dir)
+            self.tree_right.setRootIndex(right_idx)
+
+            # Sync left tree view selection and expansion
+            left_idx = self.folder_model.index(self.current_dir)
+            if left_idx.isValid():
+                self.tree_left.setCurrentIndex(left_idx)
+                self.tree_left.scrollTo(left_idx)
+                self.tree_left.expand(left_idx)
+
+    def navigate_up(self):
+        parent_dir = os.path.dirname(self.current_dir)
+        if parent_dir and os.path.exists(parent_dir) and parent_dir != self.current_dir:
+            self.set_current_directory(parent_dir)
+
+    def navigate_to_text(self):
+        entered = self.txt_path.text().strip()
+        if os.path.exists(entered) and os.path.isdir(entered):
+            self.set_current_directory(entered)
+        else:
+            self.txt_path.setText(self.current_dir)
+
+    def on_left_item_clicked(self, index):
+        path = self.folder_model.filePath(index)
+        if path and os.path.exists(path) and os.path.isdir(path):
+            self.set_current_directory(path)
+
+    def on_right_item_double_clicked(self, index):
+        path = self.file_model.filePath(index)
+        if os.path.isdir(path):
+            self.set_current_directory(path)
+        elif os.path.isfile(path):
+            self.accept()
+
+    def get_selected_paths(self):
+        selected_indexes = self.tree_right.selectionModel().selectedRows(0)
+        paths = []
+        for idx in selected_indexes:
+            p = self.file_model.filePath(idx)
+            if p and os.path.exists(p):
+                paths.append(os.path.normpath(p).replace('/', os.sep))
+        # If nothing in the right view is highlighted, add the current folder itself
+        if not paths and os.path.exists(self.current_dir):
+            paths.append(self.current_dir)
+        return paths
+
+
 class DropTreeWidget(QTreeWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1034,13 +1213,9 @@ class KryptDistApp(QMainWindow):
 
         # Path Control Buttons
         btn_layout = QHBoxLayout()
-        self.btn_add_dir = QPushButton("Add Folder")
-        self.btn_add_dir.clicked.connect(self.add_directory)
-        btn_layout.addWidget(self.btn_add_dir)
-
-        self.btn_add_files = QPushButton("Add Files")
-        self.btn_add_files.clicked.connect(self.add_files)
-        btn_layout.addWidget(self.btn_add_files)
+        self.btn_add_items = QPushButton("+ Add Files && Folders...")
+        self.btn_add_items.clicked.connect(self.add_files_folders)
+        btn_layout.addWidget(self.btn_add_items)
 
         self.btn_remove = QPushButton("Remove Selected")
         self.btn_remove.clicked.connect(self.remove_selected_path)
@@ -1206,26 +1381,21 @@ class KryptDistApp(QMainWindow):
             self.path_list.expandAll()
             self.btn_toggle_targets.setText("▼")
 
-    def add_directory(self):
-        dir_path = QFileDialog.getExistingDirectory(self, "Select Directory", self.last_directory)
-        if dir_path:
-            clean_p = os.path.normpath(dir_path).replace('/', os.sep)
-            self.last_directory = clean_p
-            self.settings.setValue("last_directory", self.last_directory)
-            self.path_list.add_path(clean_p)
-            if self.btn_toggle_targets.text() == "▼":
-                self.path_list.expandAll()
-
-    def add_files(self):
-        files, _ = QFileDialog.getOpenFileNames(self, "Select Files", self.last_directory)
-        if files:
-            self.last_directory = os.path.normpath(os.path.dirname(files[0])).replace('/', os.sep)
-            self.settings.setValue("last_directory", self.last_directory)
-            files.sort(key=natural_sort_key)
-            for f in files:
-                clean_p = os.path.normpath(f).replace('/', os.sep)
-                if not clean_p.lower().endswith(CHECKSUM_EXTS):
-                    self.path_list.add_path(clean_p)
+    def add_files_folders(self):
+        dialog = AddFilesFoldersDialog(self.last_directory, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            selected_paths = dialog.get_selected_paths()
+            if selected_paths:
+                first_item = selected_paths[0]
+                self.last_directory = first_item if os.path.isdir(first_item) else os.path.dirname(first_item)
+                self.settings.setValue("last_directory", self.last_directory)
+                selected_paths.sort(key=natural_sort_key)
+                for p in selected_paths:
+                    clean_p = os.path.normpath(p).replace('/', os.sep)
+                    if not clean_p.lower().endswith(CHECKSUM_EXTS):
+                        self.path_list.add_path(clean_p)
+                if self.btn_toggle_targets.text() == "▼":
+                    self.path_list.expandAll()
 
     def remove_selected_path(self):
         for item in self.path_list.selectedItems():
@@ -1372,6 +1542,8 @@ class KryptDistApp(QMainWindow):
             f"<li><b>MultiHash Mode:</b> Generates both a root primary <code>.hash</code> file and individual "
             f"subdirectory hashes within every subfolder in a single scanning pass.</li>"
             f"<li><b>Primary Hash Only Mode:</b> Generates only the root directory's primary <code>.hash</code> file.</li>"
+            f"<li><b>Standalone File Hashing:</b> When individual files are targeted, KryptDist generates dedicated "
+            f"<code>&lt;filename&gt;.hash</code> manifests (e.g. <code>file.hash</code> for <code>file.txt</code>) for each target.</li>"
             f"<li><b>Batch Processing:</b> Add multiple folders and files simultaneously via Drag &amp; Drop or Windows <b>SendTo</b>. "
             f"KryptDist processes every root target independently in a single, unified queue.</li>"
             f"<li><b>Execution Control:</b> While generating hashes, the execution button transforms into a <b>Cancel</b> button "
@@ -1381,7 +1553,7 @@ class KryptDistApp(QMainWindow):
             f"<ul>"
             f"<li><b>Incremental Smart Hashing:</b> KryptDist scans existing primary hash files and skips already verified files, "
             f"only hashing new files and appending them to the hash files.</li>"
-            f"<li><b>Delete Primary Hashes First:</b> Deletes any existing root primary <code>.hash</code> file before generating new checksums.</li>"
+            f"<li><b>Delete Primary Hashes First:</b> Deletes any existing root primary <code>.hash</code> file or individual file <code>.hash</code> manifests before generating new checksums.</li>"
             f"<li><b>Delete Subdirectory Hashes First:</b> Cleans out existing subhashes across all subfolders prior to generation.</li>"
             f"</ul>"
             f"<h2>PREFERENCES &amp; OPTIONS</h2>"
@@ -1398,6 +1570,7 @@ class KryptDistApp(QMainWindow):
             f"</ul>"
             f"<h2>INTERFACE &amp; THEMES</h2>"
             f"<ul>"
+            f"<li><b>Dual-Pane File &amp; Folder Picker:</b> Click <b>+ Add Files &amp; Folders...</b> to browse drives and folders in a split-tree explorer dialog supporting simultaneous multi-selection of both files and directories.</li>"
             f"<li><b>Tree Navigation:</b> Target lists and progress indicators display clean file/folder names. Click individual disclosure triangles (<code>▶</code> / <code>▼</code>) to view complete, word-wrapped paths with zero horizontal scrolling.</li>"
             f"<li><b>Header Toggle:</b> Click the triangle icon on the far right of <b>Target Files &amp; Folders</b> to expand or collapse all target paths at once.</li>"
             f"<li><b>Persistent UI State:</b> Expanded/collapsed triangle states are remembered across restarts.</li>"
@@ -1628,8 +1801,7 @@ class KryptDistApp(QMainWindow):
         return msg_box.exec()
 
     def set_controls_locked(self, locked):
-        self.btn_add_dir.setEnabled(not locked)
-        self.btn_add_files.setEnabled(not locked)
+        self.btn_add_items.setEnabled(not locked)
         self.btn_remove.setEnabled(not locked)
         self.btn_clear.setEnabled(not locked)
         self.combo_algo.setEnabled(not locked)
@@ -1698,12 +1870,18 @@ class KryptDistApp(QMainWindow):
         
         total_new_files = 0
 
-        for target_dir, data in results.items():
+        for target_item, data in results.items():
             target_results = data["results"]
             existing_master = data["known"]
             is_dir = data.get("is_dir", True)
-            root_folder_name = os.path.basename(target_dir) or "checksums"
-            master_hash_path = os.path.join(target_dir, f"{root_folder_name}.hash")
+            if is_dir:
+                target_dir = target_item
+                root_folder_name = os.path.basename(target_dir) or "checksums"
+                master_hash_path = os.path.join(target_dir, f"{root_folder_name}.hash")
+            else:
+                target_dir = os.path.dirname(target_item)
+                file_base = os.path.splitext(target_item)[0]
+                master_hash_path = f"{file_base}.hash"
 
             # Determine strictly new entries for master file
             new_master_entries = {k: v for k, v in target_results.items() if os.path.normpath(k) not in existing_master}
@@ -1734,7 +1912,7 @@ class KryptDistApp(QMainWindow):
                         for rel_path, file_hash in new_master_entries.items():
                             mf.write(f"{file_hash} *{rel_path}\n")
                 except Exception as e:
-                    QMessageBox.critical(self, "Error", f"Failed to write master hash file for {target_dir}: {e}")
+                    QMessageBox.critical(self, "Error", f"Failed to write hash file for {target_item}: {e}")
                     return
 
             # Write/Append Distributed Subfolder Hashes if enabled
