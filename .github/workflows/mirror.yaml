@@ -18,12 +18,35 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.MIRROR_KEY }}
 
-      - name: Force Mirror from Disroot
+      - name: Force Mirror from Disroot and Clean Releases
+        env:
+          GH_TOKEN: ${{ secrets.MIRROR_KEY }}
+          GITHUB_TOKEN: ${{ secrets.MIRROR_KEY }}
         run: |
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "actions@github.com"
           git remote add disroot https://git.disroot.org/pwshAgyjkcrg761/KryptDist-py.git
-          git fetch disroot --tags --force
+          
+          # Fetch all branches and tags from Disroot, pruning local tracking tags no longer on Disroot
+          git fetch disroot --tags --force --prune
+          
           git checkout main
           git reset --hard disroot/main
-          git push https://x-access-token:${{ secrets.MIRROR_KEY }}@github.com/pwshAgyjkcrg761/KryptDist-py.git main --tags --force
+          
+          # Force push main branch and push/prune tags to GitHub remote
+          git push https://x-access-token:${{ secrets.MIRROR_KEY }}@github.com/pwshAgyjkcrg761/KryptDist-py.git main --force
+          git push https://x-access-token:${{ secrets.MIRROR_KEY }}@github.com/pwshAgyjkcrg761/KryptDist-py.git --prune 'refs/tags/*:refs/tags/*' --force
+          
+          # Fetch local tags list
+          TAG_LIST=$(git tag)
+          
+          # Fetch GitHub releases list
+          RELEASE_LIST=$(gh release list --limit 100 --json tagName --jq '.[].tagName')
+          
+          # Remove any GitHub release where the tag no longer exists locally
+          for rel in $RELEASE_LIST; do
+            if ! echo "$TAG_LIST" | grep -x "$rel" > /dev/null; then
+              echo "Deleting orphaned release for tag: $rel"
+              gh release delete "$rel" --cleanup-tag --yes
+            fi
+          done
