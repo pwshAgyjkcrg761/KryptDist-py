@@ -19,11 +19,30 @@ jobs:
           token: ${{ secrets.MIRROR_KEY }}
 
       - name: Force Mirror from Disroot
+        env:
+          GH_TOKEN: ${{ secrets.MIRROR_KEY }}
         run: |
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "actions@github.com"
+
+          # 1. Clear local tags brought in by checkout to prevent keeping stale tags
+          git tag -l | xargs -r git tag -d
+
+          # 2. Fetch all branches and tags from Disroot
           git remote add disroot https://git.disroot.org/pwshAgyjkcrg761/KryptDist-py.git
           git fetch disroot --tags --force
-          git checkout main
-          git reset --hard disroot/main
-          git push https://x-access-token:${{ secrets.MIRROR_KEY }}@github.com/pwshAgyjkcrg761/KryptDist-py.git main --tags --force
+
+          # 3. Align main branch
+          git checkout -B main disroot/main
+
+          # 4. Push main branch and prune remote tags not on Disroot
+          git push https://x-access-token:${{ secrets.MIRROR_KEY }}@github.com/pwshAgyjkcrg761/KryptDist-py.git main --force
+          git push --prune https://x-access-token:${{ secrets.MIRROR_KEY }}@github.com/pwshAgyjkcrg761/KryptDist-py.git "refs/tags/*:refs/tags/*"
+
+          # 5. Delete orphaned GitHub releases whose tags no longer exist
+          for tag in $(gh release list --repo pwshAgyjkcrg761/KryptDist-py --limit 1000 --json tagName --jq '.[].tagName'); do
+            if ! git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+              echo "Deleting orphaned release for tag: $tag"
+              gh release delete "$tag" --repo pwshAgyjkcrg761/KryptDist-py --yes
+            fi
+          done
