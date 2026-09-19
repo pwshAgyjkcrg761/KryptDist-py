@@ -113,4 +113,4 @@ This software is released under the **GNU General Public License v3**.
 ---
 > **Document Control**<br>
 > *This document is up-to-date with the following version of KryptDist™.*<br>
-> *2026.09.13__07.05.27*
+> *2026.09.18__20.00.33*
