@@ -1,6 +1,6 @@
 # ==============================================================================
 # SCRIPT: KryptDist.py
-# VERSION: 2026.09.13__08.01.19
+# VERSION: 2026.09.18__20.00.33
 # TARGET: Python 3.14.5
 #
 # Copyright (C) 2026 pwshAgyjkcrg761
@@ -73,7 +73,7 @@ import re
 import ctypes
 import ctypes.wintypes
 
-APP_VERSION = "2026.09.13__08.01.19"
+APP_VERSION = "2026.09.18__20.00.33"
 
 def natural_sort_key(s):
     """Sort strings containing numbers in human/natural order safely across types."""
@@ -145,6 +145,20 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
 from PyQt6.QtGui import (QActionGroup, QPalette, QColor, QIcon, QPixmap, QPainter, 
                          QPen, QFileSystemModel)
 import ctypes
+
+from PyQt6 import QtSvg
+
+def get_bundle_dir():
+    """Returns the base directory for bundled read-only assets (e.g., icons in _MEIPASS)."""
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        return sys._MEIPASS
+    return os.path.dirname(os.path.realpath(__file__))
+
+def get_app_dir():
+    """Returns the directory containing the executable or script for persistent writable files."""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.realpath(__file__))
 
 def get_status_pixmap(status="success", size=48):
     """Draws a crisp green checkmark or red X badge for dialog message boxes."""
@@ -822,8 +836,7 @@ class VerificationOSD(QWidget):
         layout.setContentsMargins(8, 4, 8, 4)
         layout.setSpacing(6)
 
-        script_dir = os.path.dirname(os.path.realpath(__file__))
-        icon_path = os.path.join(script_dir, "KryptDist_internal", "icons", "KryptDist_ghost_icon.svg")
+        icon_path = os.path.join(get_bundle_dir(), "KryptDist_internal", "icons", "KryptDist_ghost_icon.svg")
         if os.path.exists(icon_path):
             lbl_icon = QLabel()
             lbl_icon.setStyleSheet("background: transparent; border: none; padding: 0px;")
@@ -927,8 +940,7 @@ class AddFilesFoldersDialog(QDialog):
         self.setWindowTitle("Add Files & Folders")
         self.resize(800, 480)
 
-        script_dir = os.path.dirname(os.path.realpath(__file__))
-        icon_path = os.path.join(script_dir, "KryptDist_internal", "icons", "KryptDist_ghost_icon.svg")
+        icon_path = os.path.join(get_bundle_dir(), "KryptDist_internal", "icons", "KryptDist_ghost_icon.svg")
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
 
@@ -1161,12 +1173,13 @@ class KryptDistApp(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"KryptDist v{APP_VERSION}")
         
-        script_dir = os.path.dirname(os.path.realpath(__file__))
-        internal_dir = os.path.join(script_dir, "KryptDist_internal")
+        internal_dir = os.path.join(get_app_dir(), "KryptDist_internal")
         os.makedirs(internal_dir, exist_ok=True)
         self.config_file = os.path.join(internal_dir, "KryptDist.config.json")
         
-        icon_path = os.path.join(internal_dir, "icons", "KryptDist_ghost_icon.svg")
+        icon_path = os.path.join(get_bundle_dir(), "KryptDist_internal", "icons", "KryptDist_ghost_icon.svg")
+        if not os.path.exists(icon_path):
+            icon_path = os.path.join(internal_dir, "icons", "KryptDist_ghost_icon.svg")
         if os.path.exists(icon_path):
             self.setWindowIcon(QIcon(icon_path))
             
@@ -1523,8 +1536,7 @@ class KryptDistApp(QMainWindow):
         dialog.setWindowTitle("Manual")
         dialog.resize(650, 540)
 
-        script_dir = os.path.dirname(os.path.realpath(__file__))
-        icon_path = os.path.join(script_dir, "KryptDist_internal", "icons", "KryptDist_ghost_icon.svg")
+        icon_path = os.path.join(get_bundle_dir(), "KryptDist_internal", "icons", "KryptDist_ghost_icon.svg")
         if os.path.exists(icon_path):
             dialog.setWindowIcon(QIcon(icon_path))
 
@@ -1675,9 +1687,10 @@ class KryptDistApp(QMainWindow):
         has_failed = len(results["failed"]) > 0
         has_missing = len(results["missing"]) > 0
 
-        script_dir = os.path.dirname(os.path.realpath(__file__))
-        internal_dir = os.path.join(script_dir, "KryptDist_internal")
-        icon_path = os.path.join(internal_dir, "icons", "KryptDist_ghost_icon.svg")
+        internal_dir = os.path.join(get_app_dir(), "KryptDist_internal")
+        icon_path = os.path.join(get_bundle_dir(), "KryptDist_internal", "icons", "KryptDist_ghost_icon.svg")
+        if not os.path.exists(icon_path):
+            icon_path = os.path.join(internal_dir, "icons", "KryptDist_ghost_icon.svg")
 
         if has_failed or has_missing:
             self.osd.trigger_error_flash()
@@ -1777,9 +1790,9 @@ class KryptDistApp(QMainWindow):
         if hasattr(self, 'settings'):
             sound_disabled = self.settings.value("disable_notification_sounds", False)
 
-        script_dir = os.path.dirname(os.path.realpath(__file__))
-        internal_dir = os.path.join(script_dir, "KryptDist_internal")
-        icon_path = os.path.join(internal_dir, "icons", "KryptDist_ghost_icon.svg")
+        icon_path = os.path.join(get_bundle_dir(), "KryptDist_internal", "icons", "KryptDist_ghost_icon.svg")
+        if not os.path.exists(icon_path):
+            icon_path = os.path.join(get_app_dir(), "KryptDist_internal", "icons", "KryptDist_ghost_icon.svg")
 
         msg_box = QMessageBox(self if self.isVisible() else None)
         window_title = title if title.startswith("KryptDist") else f"KryptDist - {title}"
