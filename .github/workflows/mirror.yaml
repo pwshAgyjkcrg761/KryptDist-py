@@ -18,35 +18,25 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.MIRROR_KEY }}
 
-      - name: Force Mirror from Disroot and Clean Releases
+      - name: Force Mirror from Disroot
         env:
           GH_TOKEN: ${{ secrets.MIRROR_KEY }}
-          GITHUB_TOKEN: ${{ secrets.MIRROR_KEY }}
         run: |
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "actions@github.com"
           git remote add disroot https://git.disroot.org/pwshAgyjkcrg761/KryptDist-py.git
           
-          # Fetch all branches and tags from Disroot, pruning local tracking tags no longer on Disroot
-          git fetch disroot --tags --force --prune
+          # Fetch with --prune-tags to drop local references to tags deleted on Disroot
+          git fetch disroot main --tags --prune-tags --force
           
           git checkout main
           git reset --hard disroot/main
           
-          # Force push main branch and push/prune tags to GitHub remote
+          # Push main branch and prune deleted tags on GitHub
           git push https://x-access-token:${{ secrets.MIRROR_KEY }}@github.com/pwshAgyjkcrg761/KryptDist-py.git main --force
-          git push https://x-access-token:${{ secrets.MIRROR_KEY }}@github.com/pwshAgyjkcrg761/KryptDist-py.git --prune 'refs/tags/*:refs/tags/*' --force
+          git push https://x-access-token:${{ secrets.MIRROR_KEY }}@github.com/pwshAgyjkcrg761/KryptDist-py.git --tags --prune --force
           
-          # Fetch local tags list
-          TAG_LIST=$(git tag)
-          
-          # Fetch GitHub releases list
-          RELEASE_LIST=$(gh release list --limit 100 --json tagName --jq '.[].tagName')
-          
-          # Remove any GitHub release where the tag no longer exists locally
-          for rel in $RELEASE_LIST; do
-            if ! echo "$TAG_LIST" | grep -x "$rel" > /dev/null; then
-              echo "Deleting orphaned release for tag: $rel"
-              gh release delete "$rel" --cleanup-tag --yes
-            fi
+          # Delete any GitHub Release UI entry if its corresponding tag is gone
+          gh release list --limit 100 --json tagName --jq '.[].tagName' | while read -r rel; do
+            git rev-parse "$rel" >/dev/null 2>&1 || gh release delete "$rel" --cleanup-tag --yes
           done
