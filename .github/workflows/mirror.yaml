@@ -25,7 +25,7 @@ jobs:
           git config --global user.name "GitHub Actions Bot"
           git config --global user.email "actions@github.com"
 
-          # 1. Clear local tags brought in by checkout to prevent keeping stale tags
+          # 1. Clear local tags brought in by checkout
           git tag -l | xargs -r git tag -d
 
           # 2. Fetch all branches and tags from Disroot
@@ -46,3 +46,41 @@ jobs:
               gh release delete "$tag" --repo pwshAgyjkcrg761/KryptDist-py --yes
             fi
           done
+
+          # 6. Sync Releases and custom assets from Disroot to GitHub
+          DISROOT_API="https://git.disroot.org/api/v1/repos/pwshAgyjkcrg761/KryptDist-py/releases"
+          RELEASES_JSON=$(curl -sSL "$DISROOT_API" || echo "[]")
+
+          if echo "$RELEASES_JSON" | jq -e 'if type=="array" then . else empty end' >/dev/null 2>&1; then
+            echo "$RELEASES_JSON" | jq -c '.[]' | while read -r rel; do
+              TAG=$(echo "$rel" | jq -r '.tag_name // empty')
+              [ -z "$TAG" ] && continue
+
+              if ! gh release view "$TAG" --repo pwshAgyjkcrg761/KryptDist-py >/dev/null 2>&1; then
+                echo "Creating release $TAG on GitHub..."
+                TITLE=$(echo "$rel" | jq -r '.name // empty')
+                BODY=$(echo "$rel" | jq -r '.body // empty')
+                IS_PRERELEASE=$(echo "$rel" | jq -r '.prerelease // false')
+                IS_DRAFT=$(echo "$rel" | jq -r '.draft // false')
+
+                TMP_DIR=$(mktemp -d)
+                ASSET_ARGS=()
+
+                while read -r asset_url asset_name; do
+                  if [ -n "$asset_url" ] && [ -n "$asset_name" ]; then
+                    curl -sSL "$asset_url" -o "$TMP_DIR/$asset_name"
+                    ASSET_ARGS+=("$TMP_DIR/$asset_name")
+                  fi
+                done < <(echo "$rel" | jq -r '.assets[]? | "\(.browser_download_url) \(.name)"')
+
+                FLAGS=()
+                [ -n "$TITLE" ] && FLAGS+=(--title "$TITLE")
+                [ -n "$BODY" ] && FLAGS+=(--notes "$BODY")
+                [ "$IS_PRERELEASE" = "true" ] && FLAGS+=(--prerelease)
+                [ "$IS_DRAFT" = "true" ] && FLAGS+=(--draft)
+
+                gh release create "$TAG" "${FLAGS[@]}" "${ASSET_ARGS[@]}" --repo pwshAgyjkcrg761/KryptDist-py
+                rm -rf "$TMP_DIR"
+              fi
+            done
+          fi
