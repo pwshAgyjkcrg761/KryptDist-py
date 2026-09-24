@@ -1,6 +1,6 @@
 # ==============================================================================
 # SCRIPT: KryptDist.py
-# VERSION: 2026.09.18__20.00.33
+# VERSION: 2026.09.24__12.43.15
 # TARGET: Python 3.14.5
 #
 # Copyright (C) 2026 pwshAgyjkcrg761
@@ -73,7 +73,7 @@ import re
 import ctypes
 import ctypes.wintypes
 
-APP_VERSION = "2026.09.18__20.00.33"
+APP_VERSION = "2026.09.24__12.43.15"
 
 def natural_sort_key(s):
     """Sort strings containing numbers in human/natural order safely across types."""
@@ -471,6 +471,70 @@ class HashWorker(QThread):
     def run(self):
         all_targets_data = {}
         total_files_to_hash = []
+        is_hex = lambda s: all(c in '0123456789abcdefABCDEF' for c in s)
+
+        def parse_existing_manifest(h_path):
+            entries = {}
+            if not os.path.exists(h_path):
+                return entries
+            current_algo = "BLAKE3"
+            ext = os.path.splitext(h_path)[1].lower()
+            if ext in (".sha3", ".sha3-256", ".sha3-512"): current_algo = "SHA-3"
+            elif ext == ".sha256": current_algo = "SHA-256"
+            elif ext == ".sha512": current_algo = "SHA-512"
+            elif ext == ".md5": current_algo = "MD5"
+            elif ext in (".sha1", ".sha"): current_algo = "SHA-1"
+            elif ext in (".sfv", ".crc32", ".crc"): current_algo = "SFV / CRC32"
+            elif ext in (".xx3", ".xxh3", ".xxh"): current_algo = "xx3"
+            elif ext in (".b2", ".blake2", ".blake2b"): current_algo = "BLAKE2b"
+            elif ext == ".blake2s": current_algo = "BLAKE2s"
+
+            try:
+                with open(h_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line_str = line.strip()
+                        line_lower = line_str.lower()
+                        if line_lower.startswith("# algorithm:") or line_lower.startswith("; algorithm:"):
+                            current_algo = line_str.split(":", 1)[1].strip()
+                            continue
+                        if "blake2" in line_lower:
+                            current_algo = "BLAKE2s"
+                            if line_str.startswith('#') or line_str.startswith(';'):
+                                continue
+                        if "made with checksum" in line_lower:
+                            if current_algo == "BLAKE3":
+                                current_algo = "BLAKE2s"
+                            continue
+                        if not line_str or line_str.startswith('#') or line_str.startswith(';'):
+                            continue
+
+                        tokens = line_str.split()
+                        if len(tokens) >= 2:
+                            first_tok = tokens[0].strip()
+                            last_tok = tokens[-1].strip()
+                            if len(first_tok) in (8, 16, 32, 40, 64, 128) and is_hex(first_tok):
+                                expected_h = first_tok
+                                entry_p = line_str.split(maxsplit=1)[1].lstrip('*').strip()
+                            elif len(last_tok) == 8 and is_hex(last_tok):
+                                expected_h = last_tok
+                                entry_p = line_str.rsplit(maxsplit=1)[0].lstrip('*').strip()
+                            else:
+                                continue
+
+                            norm_p = os.path.normpath(entry_p)
+                            entry_algo = current_algo
+                            h_len = len(expected_h)
+                            if h_len == 8: entry_algo = "SFV / CRC32"
+                            elif h_len == 16: entry_algo = "xx3"
+                            elif h_len == 32: entry_algo = "MD5"
+                            elif h_len == 40: entry_algo = "SHA-1"
+                            elif h_len == 128 and not any(k in current_algo.upper() for k in ["BLAKE2", "512"]):
+                                entry_algo = "BLAKE2b"
+
+                            entries[norm_p] = (expected_h, entry_algo)
+            except Exception as e:
+                print(f"Error reading existing manifest {h_path}: {e}")
+            return entries
 
         for target in self.targets:
             if not os.path.exists(target):
@@ -501,22 +565,8 @@ class HashWorker(QThread):
                                 except Exception as e:
                                     print(f"Error removing subfolder checksum file {f}: {e}")
 
-                existing_entries = set()
-                all_known_hashes = {}
-                if os.path.exists(master_hash_path):
-                    try:
-                        with open(master_hash_path, 'r', encoding='utf-8') as f:
-                            for line in f:
-                                line = line.strip()
-                                if line and not line.startswith('#'):
-                                    parts = line.split(maxsplit=1)
-                                    if len(parts) == 2:
-                                        h_val = parts[0].strip()
-                                        rel_p = os.path.normpath(parts[1].lstrip('*').strip())
-                                        existing_entries.add(rel_p)
-                                        all_known_hashes[rel_p] = h_val
-                    except Exception as e:
-                        print(f"Error reading existing master hash: {e}")
+                all_known_hashes = parse_existing_manifest(master_hash_path) if os.path.exists(master_hash_path) else {}
+                existing_entries = set(all_known_hashes.keys())
 
                 target_new_files = []
                 for root, dirs, files in os.walk(target_dir):
@@ -549,22 +599,8 @@ class HashWorker(QThread):
                     except Exception as e:
                         print(f"Error removing file hash: {e}")
 
-                existing_entries = set()
-                all_known_hashes = {}
-                if os.path.exists(file_hash_path):
-                    try:
-                        with open(file_hash_path, 'r', encoding='utf-8') as f:
-                            for line in f:
-                                line = line.strip()
-                                if line and not line.startswith('#'):
-                                    parts = line.split(maxsplit=1)
-                                    if len(parts) == 2:
-                                        h_val = parts[0].strip()
-                                        rel_p = os.path.normpath(parts[1].lstrip('*').strip())
-                                        existing_entries.add(rel_p)
-                                        all_known_hashes[rel_p] = h_val
-                    except Exception as e:
-                        print(f"Error reading existing file hash: {e}")
+                all_known_hashes = parse_existing_manifest(file_hash_path) if os.path.exists(file_hash_path) else {}
+                existing_entries = set(all_known_hashes.keys())
 
                 rel_p = os.path.basename(f_path)
                 is_new = rel_p not in existing_entries
@@ -619,7 +655,7 @@ class HashWorker(QThread):
                             hasher.update(chunk)
                     digest = hasher.hexdigest()
 
-                all_targets_data[target_dir]["results"][rel_path] = digest
+                all_targets_data[target_dir]["results"][rel_path] = (digest, self.algorithm)
             except Exception as e:
                 print(f"Error hashing {file_path}: {e}")
 
@@ -1896,7 +1932,6 @@ class KryptDistApp(QMainWindow):
         self.status_tree_root.setText(0, "Status: Writing hash files...")
         self.status_path_label.setText("")
         algo = self.combo_algo.currentText()
-        header = f"# checksum file generated with KryptDist v{APP_VERSION}\n# algorithm: {algo}\n\n"
         
         total_new_files = 0
 
@@ -1923,9 +1958,12 @@ class KryptDistApp(QMainWindow):
                 try:
                     with open(master_hash_path, 'r', encoding='utf-8') as f:
                         for line in f:
-                            line = line.strip()
-                            if line.startswith('# algorithm:'):
-                                last_master_algo = line.split(':', 1)[1].strip()
+                            line_str = line.strip()
+                            line_lower = line_str.lower()
+                            if line_lower.startswith('# algorithm:') or line_lower.startswith('; algorithm:'):
+                                last_master_algo = line_str.split(':', 1)[1].strip()
+                            elif "made with checksum" in line_lower and not last_master_algo:
+                                last_master_algo = "BLAKE2s"
                 except Exception as e:
                     print(f"Error reading existing master algorithm: {e}")
 
@@ -1935,12 +1973,17 @@ class KryptDistApp(QMainWindow):
                     file_exists = os.path.exists(master_hash_path)
                     with open(master_hash_path, 'a' if file_exists else 'w', encoding='utf-8') as mf:
                         if not file_exists:
-                            mf.write(header)
+                            mf.write(f"# checksum file generated with KryptDist v{APP_VERSION}\n")
+                            curr_algo = None
                         else:
-                            if last_master_algo != algo:
-                                mf.write(f"\n# algorithm: {algo}\n")
-                        for rel_path, file_hash in new_master_entries.items():
-                            mf.write(f"{file_hash} *{rel_path}\n")
+                            curr_algo = last_master_algo
+
+                        for rel_path, entry_data in new_master_entries.items():
+                            f_hash, f_algo = entry_data if isinstance(entry_data, tuple) else (entry_data, algo)
+                            if f_algo != curr_algo:
+                                mf.write(f"\n# algorithm: {f_algo}\n")
+                                curr_algo = f_algo
+                            mf.write(f"{f_hash} *{rel_path}\n")
                 except Exception as e:
                     QMessageBox.critical(self, "Error", f"Failed to write hash file for {target_item}: {e}")
                     return
@@ -1948,13 +1991,14 @@ class KryptDistApp(QMainWindow):
             # Write/Append Distributed Subfolder Hashes if enabled
             if is_dir and self.check_subfolders.isChecked():
                 subfolder_hashes = {}
-                for rel_path, file_hash in target_results.items():
+                for rel_path, entry_data in target_results.items():
+                    f_hash, f_algo = entry_data if isinstance(entry_data, tuple) else (entry_data, algo)
                     norm_rel = os.path.normpath(rel_path)
                     parts = norm_rel.split(os.sep)
                     if len(parts) > 1:
                         sub_dir = os.path.join(target_dir, *parts[:-1])
                         sub_rel_path = parts[-1]
-                        subfolder_hashes.setdefault(sub_dir, []).append((file_hash, sub_rel_path))
+                        subfolder_hashes.setdefault(sub_dir, []).append((f_hash, f_algo, sub_rel_path))
 
                 for sub_dir, entries in subfolder_hashes.items():
                     sub_folder_name = os.path.basename(sub_dir)
@@ -1966,32 +2010,39 @@ class KryptDistApp(QMainWindow):
                         try:
                             with open(sub_hash_path, 'r', encoding='utf-8') as f:
                                 for line in f:
-                                    line = line.strip()
-                                    if line.startswith('# algorithm:'):
-                                        last_sub_algo = line.split(':', 1)[1].strip()
-                                    elif line and not line.startswith('#'):
-                                        parts = line.split(maxsplit=1)
+                                    line_str = line.strip()
+                                    line_lower = line_str.lower()
+                                    if line_lower.startswith('# algorithm:') or line_lower.startswith('; algorithm:'):
+                                        last_sub_algo = line_str.split(':', 1)[1].strip()
+                                    elif "made with checksum" in line_lower and not last_sub_algo:
+                                        last_sub_algo = "BLAKE2s"
+                                    elif line_str and not line_str.startswith('#') and not line_str.startswith(';'):
+                                        parts = line_str.split(maxsplit=1)
                                         if len(parts) == 2:
                                             existing_sub_entries.add(os.path.normpath(parts[1].lstrip('*').strip()))
                         except Exception as e:
                             print(f"Error reading existing subfolder hash {sub_hash_path}: {e}")
 
-                    new_sub_entries = [
-                        (f_hash, s_rel) for f_hash, s_rel in entries 
-                        if os.path.normpath(s_rel) not in existing_sub_entries
+                    sub_file_exists = os.path.exists(sub_hash_path)
+                    entries_to_write = [
+                        (f_h, f_a, s_rel) for f_h, f_a, s_rel in entries 
+                        if not sub_file_exists or os.path.normpath(s_rel) not in existing_sub_entries
                     ]
 
-                    if new_sub_entries or not os.path.exists(sub_hash_path):
+                    if entries_to_write:
                         try:
-                            sub_file_exists = os.path.exists(sub_hash_path)
                             with open(sub_hash_path, 'a' if sub_file_exists else 'w', encoding='utf-8') as sf:
                                 if not sub_file_exists:
-                                    sf.write(header)
+                                    sf.write(f"# checksum file generated with KryptDist v{APP_VERSION}\n")
+                                    curr_algo = None
                                 else:
-                                    if last_sub_algo != algo:
-                                        sf.write(f"\n# algorithm: {algo}\n")
-                                for file_hash, sub_rel_path in new_sub_entries:
-                                    sf.write(f"{file_hash} *{sub_rel_path}\n")
+                                    curr_algo = last_sub_algo
+
+                                for f_hash, f_algo, sub_rel_path in entries_to_write:
+                                    if f_algo != curr_algo:
+                                        sf.write(f"\n# algorithm: {f_algo}\n")
+                                        curr_algo = f_algo
+                                    sf.write(f"{f_hash} *{sub_rel_path}\n")
                         except Exception as e:
                             print(f"Error writing subfolder hash for {sub_dir}: {e}")
 
