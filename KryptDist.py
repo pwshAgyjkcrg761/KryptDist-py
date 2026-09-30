@@ -1,6 +1,6 @@
 # ==============================================================================
 # SCRIPT: KryptDist.py
-# VERSION: 2026.09.24__12.43.15
+# VERSION: 2026.09.30__13.36.12
 # TARGET: Python 3.14.5
 #
 # Copyright (C) 2026 pwshAgyjkcrg761
@@ -73,7 +73,7 @@ import re
 import ctypes
 import ctypes.wintypes
 
-APP_VERSION = "2026.09.24__12.43.15"
+APP_VERSION = "2026.09.30__13.36.12"
 
 def natural_sort_key(s):
     """Sort strings containing numbers in human/natural order safely across types."""
@@ -197,14 +197,181 @@ CHECKSUM_EXTS = (
     ".xx3", ".xxh3", ".xxh", ".sha1", ".sha", ".md5", ".sfv", ".crc32", ".crc"
 )
 
+import atexit
+
+if sys.platform == "win32":
+    GENERIC_READ = 0x80000000
+    FILE_SHARE_READ = 0x00000001
+    FILE_SHARE_WRITE = 0x00000002
+    OPEN_EXISTING = 3
+    FILE_FLAG_OVERLAPPED = 0x40000000
+    FILE_FLAG_SEQUENTIAL_SCAN = 0x08000000
+    ERROR_IO_PENDING = 997
+    ERROR_HANDLE_EOF = 38
+    WAIT_TIMEOUT = 0x00000102
+    INVALID_HANDLE_VALUE = ctypes.wintypes.HANDLE(-1).value
+
+    class OVERLAPPED(ctypes.Structure):
+        _fields_ = [
+            ("Internal", ctypes.c_size_t),
+            ("InternalHigh", ctypes.c_size_t),
+            ("Offset", ctypes.wintypes.DWORD),
+            ("OffsetHigh", ctypes.wintypes.DWORD),
+            ("hEvent", ctypes.wintypes.HANDLE),
+        ]
+
+import signal
+
+ACTIVE_IO_HANDLES = set()
+IS_INTERRUPTED = False
+
+def _cleanup_all_active_io():
+    """Emergency cancel for all active disk handles on shutdown/interrupt."""
+    global IS_INTERRUPTED
+    IS_INTERRUPTED = True
+    if sys.platform == "win32":
+        for fh in list(ACTIVE_IO_HANDLES):
+            try:
+                ctypes.windll.kernel32.CancelIoEx(fh, None)
+                ctypes.windll.kernel32.CloseHandle(fh)
+            except Exception:
+                pass
+    ACTIVE_IO_HANDLES.clear()
+
+atexit.register(_cleanup_all_active_io)
+
+def _handle_user_abort():
+    """Outputs cancellation status to terminal and cleanly exits."""
+    _cleanup_all_active_io()
+    if sys.stdout is not None:
+        try:
+            sys.stdout.write("VERIFY_PROGRESS:0:0:0:0:[CANCELLED BY USER]\n")
+            sys.stdout.flush()
+        except Exception:
+            pass
+    os._exit(130)
+
+if sys.platform == "win32":
+    try:
+        def _console_ctrl_handler(ctrl_type):
+            _handle_user_abort()
+            return True
+        _ctrl_handler_type = ctypes.WINFUNCTYPE(ctypes.wintypes.BOOL, ctypes.wintypes.DWORD)
+        _global_ctrl_func = _ctrl_handler_type(_console_ctrl_handler)
+        ctypes.windll.kernel32.SetConsoleCtrlHandler(_global_ctrl_func, True)
+    except Exception:
+        pass
+
+try:
+    signal.signal(signal.SIGINT, lambda sig, frame: _handle_user_abort())
+except Exception:
+    pass
+
+def is_optical_drive(path):
+    """Checks if the target path resides on an optical drive (CD/DVD/BD)."""
+    if sys.platform == "win32":
+        try:
+            drive_root = os.path.splitdrive(os.path.abspath(path))[0]
+            if drive_root:
+                if not drive_root.endswith("\\"):
+                    drive_root += "\\"
+                # DRIVE_CDROM = 5
+                return ctypes.windll.kernel32.GetDriveTypeW(drive_root) == 5
+        except Exception:
+            pass
+    return False
+
+def read_file_chunks_with_watchdog(file_path, timeout_sec=20.0, chunk_size=65536):
+    """Yields chunks of data with true non-blocking Win32 Overlapped I/O and hardware watchdog."""
+    if sys.platform != "win32":
+        with open(file_path, 'rb') as f:
+            while chunk := f.read(chunk_size):
+                yield chunk
+        return
+
+    h_file = ctypes.windll.kernel32.CreateFileW(
+        os.path.abspath(file_path),
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        None,
+        OPEN_EXISTING,
+        FILE_FLAG_OVERLAPPED | FILE_FLAG_SEQUENTIAL_SCAN,
+        None
+    )
+
+    if h_file == INVALID_HANDLE_VALUE or h_file == -1:
+        err = ctypes.windll.kernel32.GetLastError()
+        raise FileNotFoundError(f"Cannot open target file (Win32 error {err}): {file_path}")
+
+    ACTIVE_IO_HANDLES.add(h_file)
+    h_event = ctypes.windll.kernel32.CreateEventW(None, True, False, None)
+
+    ov = OVERLAPPED()
+    ov.hEvent = h_event
+    buf = ctypes.create_string_buffer(chunk_size)
+    bytes_read = ctypes.wintypes.DWORD(0)
+    file_offset = 0
+
+    try:
+        while True:
+            ov.Offset = file_offset & 0xFFFFFFFF
+            ov.OffsetHigh = (file_offset >> 32) & 0xFFFFFFFF
+            ctypes.windll.kernel32.ResetEvent(h_event)
+            bytes_read.value = 0
+
+            res = ctypes.windll.kernel32.ReadFile(
+                h_file,
+                buf,
+                chunk_size,
+                ctypes.byref(bytes_read),
+                ctypes.byref(ov)
+            )
+
+            if not res:
+                err = ctypes.windll.kernel32.GetLastError()
+                if err == ERROR_IO_PENDING:
+                    timeout_ms = int(timeout_sec * 1000)
+                    wait_res = ctypes.windll.kernel32.WaitForSingleObject(h_event, timeout_ms)
+                    if wait_res == WAIT_TIMEOUT:
+                        ctypes.windll.kernel32.CancelIoEx(h_file, ctypes.byref(ov))
+                        raise TimeoutError("Media Unreadable (20s I/O Read Timeout)")
+
+                    ok = ctypes.windll.kernel32.GetOverlappedResult(
+                        h_file,
+                        ctypes.byref(ov),
+                        ctypes.byref(bytes_read),
+                        False
+                    )
+                    if not ok:
+                        err_res = ctypes.windll.kernel32.GetLastError()
+                        if err_res == ERROR_HANDLE_EOF:
+                            break
+                        raise OSError(f"Overlapped Read Error (Error {err_res})")
+                elif err == ERROR_HANDLE_EOF:
+                    break
+                else:
+                    raise OSError(f"Win32 Read Error (Error {err})")
+
+            read_count = bytes_read.value
+            if read_count == 0:
+                break
+
+            file_offset += read_count
+            yield buf.raw[:read_count]
+    finally:
+        ACTIVE_IO_HANDLES.discard(h_file)
+        if h_event:
+            ctypes.windll.kernel32.CloseHandle(h_event)
+        if h_file and h_file != INVALID_HANDLE_VALUE:
+            ctypes.windll.kernel32.CloseHandle(h_file)
+
 def compute_file_digest(file_path, algo_name):
     """Calculates digest for a single file using the specified algorithm."""
     algo_u = algo_name.upper()
     if "CRC" in algo_u or "SFV" in algo_u:
         crc_val = 0
-        with open(file_path, 'rb') as f:
-            while chunk := f.read(65536):
-                crc_val = zlib.crc32(chunk, crc_val)
+        for chunk in read_file_chunks_with_watchdog(file_path, timeout_sec=20.0):
+            crc_val = zlib.crc32(chunk, crc_val)
         return f"{crc_val & 0xFFFFFFFF:08x}"
     elif "BLAKE3" in algo_u and HAS_BLAKE3:
         hasher = blake3.blake3()
@@ -227,9 +394,8 @@ def compute_file_digest(file_path, algo_name):
     else:
         hasher = blake3.blake3() if HAS_BLAKE3 else hashlib.blake2b()
 
-    with open(file_path, 'rb') as f:
-        while chunk := f.read(65536):
-            hasher.update(chunk)
+    for chunk in read_file_chunks_with_watchdog(file_path, timeout_sec=20.0):
+        hasher.update(chunk)
     return hasher.hexdigest()
 
 def verify_single_file_cli(target_file, specified_hash_file=None):
@@ -338,6 +504,50 @@ def verify_single_file_cli(target_file, specified_hash_file=None):
 
     return 2
 
+def play_audio_notification(event_name, settings=None):
+    """Plays an asynchronous audio voice notification if enabled in user preferences (suppressed in headless mode)."""
+    if sys.platform != "win32":
+        return
+    if any(arg.lower() in ("-headless", "--headless", "/headless") for arg in sys.argv):
+        return
+    import winsound
+
+    if settings is not None:
+        if settings.value("disable_notification_sounds", False):
+            return
+        if event_name == "gen_completed" and not settings.value("notify_gen_completed", True):
+            return
+        if event_name == "verify_completed" and not settings.value("notify_verify_completed", True):
+            return
+        if event_name == "verify_failed" and not settings.value("notify_verify_failed", True):
+            return
+        voice_setting = settings.value("notification_voice", "Emma (Great Britain female)")
+    else:
+        voice_setting = "Emma (Great Britain female)"
+
+    voice_code = "us-heart" if "heart" in voice_setting.lower() else "gb-emma"
+    event_file_map = {
+        "gen_completed": f"huggingface-co_kokoro-tts_{voice_code}_hash-generation-completed.wav",
+        "verify_completed": f"huggingface-co_kokoro-tts_{voice_code}_hash-verification-completed.wav",
+        "verify_failed": f"huggingface-co_kokoro-tts_{voice_code}_hash-verification-failed.wav",
+    }
+    filename = event_file_map.get(event_name)
+    if not filename:
+        return
+
+    search_dirs = [
+        os.path.join(get_bundle_dir(), "KryptDist_internal", "audio-notifications"),
+        os.path.join(get_app_dir(), "KryptDist_internal", "audio-notifications"),
+    ]
+    for adir in search_dirs:
+        target_path = os.path.join(adir, filename)
+        if os.path.exists(target_path):
+            try:
+                winsound.PlaySound(target_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+            except Exception:
+                pass
+            return
+
 class SettingsWrapper:
     def __init__(self, config_path):
         self.path = config_path
@@ -362,7 +572,7 @@ class PreferencesDialog(QDialog):
         super().__init__(parent)
         self.parent_app = parent
         self.setWindowTitle("Preferences")
-        self.resize(560, 320)
+        self.resize(560, 360)
 
         main_layout = QVBoxLayout(self)
         self.tabs = QTabWidget()
@@ -400,15 +610,51 @@ class PreferencesDialog(QDialog):
 
         self.tabs.addTab(ignore_tab, "File Extensions to Ignore")
 
-        # Tab 2: Options
-        options_tab = QWidget()
-        options_layout = QVBoxLayout(options_tab)
-        self.chk_disable_sound = QCheckBox("Disable Notification Sounds")
-        self.chk_disable_sound.setToolTip("Mutes all audio chimes and notification sounds for completion alerts.")
-        options_layout.addWidget(self.chk_disable_sound)
-        options_layout.addStretch()
+        # Tab 2: Notifications
+        notif_tab = QWidget()
+        notif_layout = QVBoxLayout(notif_tab)
+        notif_layout.setSpacing(12)
 
-        self.tabs.addTab(options_tab, "Options")
+        self.chk_disable_sound = QCheckBox("Disable Notification Sounds")
+        self.chk_disable_sound.setToolTip("Mutes all audio chimes and voice notification sounds.")
+        self.chk_disable_sound.toggled.connect(self._on_disable_sound_toggled)
+        notif_layout.addWidget(self.chk_disable_sound)
+
+        voice_layout = QHBoxLayout()
+        self.lbl_voice = QLabel("Voice:")
+        self.lbl_voice.setFixedWidth(45)
+        self.combo_voice = QComboBox()
+        self.combo_voice.addItem("Emma (Great Britain female)", "gb-emma")
+        self.combo_voice.addItem("Heart (USA female)", "us-heart")
+        
+        self.btn_play_voice = QPushButton("▶")
+        self.btn_play_voice.setToolTip("Preview selected voice")
+        self.btn_play_voice.setFixedWidth(36)
+        self.btn_play_voice.clicked.connect(self._preview_selected_voice)
+
+        voice_layout.addWidget(self.lbl_voice)
+        voice_layout.addWidget(self.combo_voice, 1)
+        voice_layout.addWidget(self.btn_play_voice)
+        notif_layout.addLayout(voice_layout)
+
+        self.lbl_events = QLabel("Notification Events:")
+        notif_layout.addWidget(self.lbl_events)
+
+        events_layout = QVBoxLayout()
+        events_layout.setContentsMargins(15, 0, 0, 0)
+        events_layout.setSpacing(8)
+
+        self.chk_notify_gen = QCheckBox("Hash Generation Completed")
+        self.chk_notify_verify_ok = QCheckBox("Hash Verification Completed")
+        self.chk_notify_verify_fail = QCheckBox("Hash Verification Failed")
+
+        events_layout.addWidget(self.chk_notify_gen)
+        events_layout.addWidget(self.chk_notify_verify_ok)
+        events_layout.addWidget(self.chk_notify_verify_fail)
+        notif_layout.addLayout(events_layout)
+
+        notif_layout.addStretch()
+        self.tabs.addTab(notif_tab, "Notifications")
         main_layout.addWidget(self.tabs)
 
         # Dialog Buttons
@@ -419,13 +665,69 @@ class PreferencesDialog(QDialog):
 
         self.load_values()
 
+    def _preview_selected_voice(self):
+        if sys.platform != "win32":
+            return
+        import winsound
+        voice_setting = self.combo_voice.currentText()
+        voice_code = "us-heart" if "heart" in voice_setting.lower() else "gb-emma"
+        filename = f"huggingface-co_kokoro-tts_{voice_code}_hash-generation-completed.wav"
+        search_dirs = [
+            os.path.join(get_bundle_dir(), "KryptDist_internal", "audio-notifications"),
+            os.path.join(get_app_dir(), "KryptDist_internal", "audio-notifications"),
+        ]
+        for adir in search_dirs:
+            target_path = os.path.join(adir, filename)
+            if os.path.exists(target_path):
+                try:
+                    winsound.PlaySound(target_path, winsound.SND_FILENAME | winsound.SND_ASYNC)
+                except Exception:
+                    pass
+                return
+
+    def _on_disable_sound_toggled(self, checked):
+        enabled = not checked
+        self.lbl_voice.setEnabled(enabled)
+        self.combo_voice.setEnabled(enabled)
+        self.btn_play_voice.setEnabled(enabled)
+        self.lbl_events.setEnabled(enabled)
+        self.chk_notify_gen.setEnabled(enabled)
+        self.chk_notify_verify_ok.setEnabled(enabled)
+        self.chk_notify_verify_fail.setEnabled(enabled)
+
+        if enabled:
+            self.lbl_voice.setStyleSheet("color: palette(text);")
+            self.lbl_events.setStyleSheet("font-weight: bold; color: palette(text);")
+            self.chk_notify_gen.setStyleSheet("color: palette(text);")
+            self.chk_notify_verify_ok.setStyleSheet("color: palette(text);")
+            self.chk_notify_verify_fail.setStyleSheet("color: palette(text);")
+        else:
+            self.lbl_voice.setStyleSheet("color: #888888;")
+            self.lbl_events.setStyleSheet("font-weight: bold; color: #888888;")
+            self.chk_notify_gen.setStyleSheet("color: #888888;")
+            self.chk_notify_verify_ok.setStyleSheet("color: #888888;")
+            self.chk_notify_verify_fail.setStyleSheet("color: #888888;")
+
     def load_values(self):
         if self.parent_app and hasattr(self.parent_app, 'settings'):
             s = self.parent_app.settings
             self.txt_ignore_types.setText(s.value("ignore_types", DEFAULT_IGNORE_TYPES))
             self.txt_ignore_files.setText(s.value("ignore_files", DEFAULT_IGNORE_FILES))
             self.txt_ignore_folders.setText(s.value("ignore_folders", DEFAULT_IGNORE_FOLDERS))
-            self.chk_disable_sound.setChecked(s.value("disable_notification_sounds", False))
+            
+            is_disabled = s.value("disable_notification_sounds", False)
+            self.chk_disable_sound.setChecked(is_disabled)
+
+            saved_voice = s.value("notification_voice", "Emma (Great Britain female)")
+            idx = self.combo_voice.findText(saved_voice)
+            if idx >= 0:
+                self.combo_voice.setCurrentIndex(idx)
+
+            self.chk_notify_gen.setChecked(s.value("notify_gen_completed", True))
+            self.chk_notify_verify_ok.setChecked(s.value("notify_verify_completed", True))
+            self.chk_notify_verify_fail.setChecked(s.value("notify_verify_failed", True))
+
+            self._on_disable_sound_toggled(is_disabled)
 
     def restore_defaults(self):
         self.txt_ignore_types.setText(DEFAULT_IGNORE_TYPES)
@@ -439,6 +741,10 @@ class PreferencesDialog(QDialog):
             s.setValue("ignore_files", self.txt_ignore_files.text().strip())
             s.setValue("ignore_folders", self.txt_ignore_folders.text().strip())
             s.setValue("disable_notification_sounds", self.chk_disable_sound.isChecked())
+            s.setValue("notification_voice", self.combo_voice.currentText())
+            s.setValue("notify_gen_completed", self.chk_notify_gen.isChecked())
+            s.setValue("notify_verify_completed", self.chk_notify_verify_ok.isChecked())
+            s.setValue("notify_verify_failed", self.chk_notify_verify_fail.isChecked())
         self.accept()
 
 
@@ -749,16 +1055,44 @@ class HashWorker(QThread):
         bytes_hashed = 0
         last_emit_time = 0
 
-        for hash_file, base_dir, rel_path, full_path, expected_hash, current_algo, f_size in items_to_verify:
-            if self._is_cancelled:
+        speed_samples = []
+
+        def _calc_eta(b_done, b_tot, now_t):
+            elapsed_sec = max(1, int(now_t - start_time))
+            if elapsed_sec < 2 or b_done <= 0:
+                return elapsed_sec, 0
+            speed_samples.append((now_t, b_done))
+            while speed_samples and (now_t - speed_samples[0][0] > 5.0):
+                speed_samples.pop(0)
+            if len(speed_samples) >= 2:
+                dt = speed_samples[-1][0] - speed_samples[0][0]
+                db = speed_samples[-1][1] - speed_samples[0][1]
+                cur_speed = db / dt if dt > 0.5 else (b_done / elapsed_sec)
+            else:
+                cur_speed = b_done / elapsed_sec
+            rem_bytes = max(0, b_tot - b_done)
+            eta_val = int(rem_bytes / cur_speed) if cur_speed > 0 else 0
+            return elapsed_sec, eta_val
+
+        for item_idx, (hash_file, base_dir, rel_path, full_path, expected_hash, current_algo, f_size) in enumerate(items_to_verify):
+            if self._is_cancelled or IS_INTERRUPTED:
                 return
 
             self.verification_progress.emit(rel_path)
             verification_results["total_checked"] += 1
 
-            if not os.path.exists(full_path):
-                verification_results["missing"].append((rel_path, hash_file))
-                continue
+            def _emit_stream(b_done, b_tot, el_sec, eta_s, r_path):
+                if sys.stdout is not None:
+                    try:
+                        sys.stdout.write(f"VERIFY_PROGRESS:{b_done}:{b_tot}:{el_sec}:{eta_s}:{r_path}\n")
+                        sys.stdout.flush()
+                    except Exception:
+                        pass
+
+            now = time.time()
+            elapsed_now, eta_now = _calc_eta(bytes_hashed, total_verify_bytes, now)
+            _emit_stream(bytes_hashed, total_verify_bytes, elapsed_now, eta_now, rel_path)
+            last_emit_time = now
 
             h_len = len(expected_hash)
             algo = current_algo
@@ -779,29 +1113,23 @@ class HashWorker(QThread):
                 if not any(k in algo_u for k in ["BLAKE2", "512"]):
                     algo = "BLAKE2b"
 
-            def _emit_stream(b_done, b_tot, el_sec, eta_s, r_path):
-                if sys.stdout is not None:
-                    try:
-                        sys.stdout.write(f"VERIFY_PROGRESS:{b_done}:{b_tot}:{el_sec}:{eta_s}:{r_path}\n")
-                        sys.stdout.flush()
-                    except Exception:
-                        pass
-
+            this_file_bytes = 0
             try:
                 algo_upper = algo.upper()
                 if "CRC" in algo_upper or "SFV" in algo_upper:
                     crc_val = 0
-                    with open(full_path, 'rb') as vf:
-                        while chunk := vf.read(65536):
-                            crc_val = zlib.crc32(chunk, crc_val)
-                            bytes_hashed += len(chunk)
-                            now = time.time()
-                            if now - last_emit_time >= 0.25:
-                                elapsed = max(1, int(now - start_time))
-                                speed = bytes_hashed / elapsed
-                                eta = int((total_verify_bytes - bytes_hashed) / speed) if speed > 0 and total_verify_bytes > bytes_hashed else 0
-                                _emit_stream(bytes_hashed, total_verify_bytes, elapsed, eta, rel_path)
-                                last_emit_time = now
+                    for chunk in read_file_chunks_with_watchdog(full_path, timeout_sec=20.0):
+                        if self._is_cancelled or IS_INTERRUPTED:
+                            return
+                        crc_val = zlib.crc32(chunk, crc_val)
+                        chunk_len = len(chunk)
+                        bytes_hashed += chunk_len
+                        this_file_bytes += chunk_len
+                        now = time.time()
+                        if now - last_emit_time >= 0.25:
+                            el_sec, eta_sec = _calc_eta(bytes_hashed, total_verify_bytes, now)
+                            _emit_stream(bytes_hashed, total_verify_bytes, el_sec, eta_sec, rel_path)
+                            last_emit_time = now
                     calculated_hash = f"{crc_val & 0xFFFFFFFF:08x}"
                 else:
                     if "BLAKE3" in algo_upper and HAS_BLAKE3:
@@ -825,17 +1153,18 @@ class HashWorker(QThread):
                     else:
                         hasher = hashlib.blake2b()
 
-                    with open(full_path, 'rb') as vf:
-                        while chunk := vf.read(65536):
-                            hasher.update(chunk)
-                            bytes_hashed += len(chunk)
-                            now = time.time()
-                            if now - last_emit_time >= 0.25:
-                                elapsed = max(1, int(now - start_time))
-                                speed = bytes_hashed / elapsed
-                                eta = int((total_verify_bytes - bytes_hashed) / speed) if speed > 0 and total_verify_bytes > bytes_hashed else 0
-                                _emit_stream(bytes_hashed, total_verify_bytes, elapsed, eta, rel_path)
-                                last_emit_time = now
+                    for chunk in read_file_chunks_with_watchdog(full_path, timeout_sec=20.0):
+                        if self._is_cancelled or IS_INTERRUPTED:
+                            return
+                        hasher.update(chunk)
+                        chunk_len = len(chunk)
+                        bytes_hashed += chunk_len
+                        this_file_bytes += chunk_len
+                        now = time.time()
+                        if now - last_emit_time >= 0.25:
+                            el_sec, eta_sec = _calc_eta(bytes_hashed, total_verify_bytes, now)
+                            _emit_stream(bytes_hashed, total_verify_bytes, el_sec, eta_sec, rel_path)
+                            last_emit_time = now
                     calculated_hash = hasher.hexdigest()
 
                 if calculated_hash.lower() == expected_hash.lower():
@@ -843,7 +1172,33 @@ class HashWorker(QThread):
                 else:
                     verification_results["failed"].append((rel_path, expected_hash, calculated_hash, hash_file))
             except Exception as e:
-                verification_results["failed"].append((rel_path, expected_hash, str(e), hash_file))
+                now = time.time()
+                el_sec, _ = _calc_eta(bytes_hashed, total_verify_bytes, now)
+                err_msg = str(e)
+                if IS_INTERRUPTED or self._is_cancelled or "error 6" in err_msg.lower() or isinstance(e, KeyboardInterrupt):
+                    _emit_stream(bytes_hashed, total_verify_bytes, el_sec, 0, "[CANCELLED BY USER]")
+                    return
+
+                unread_bytes = max(0, f_size - this_file_bytes)
+                bytes_hashed += unread_bytes
+                if isinstance(e, FileNotFoundError) and ("error 2" in err_msg or "error 3" in err_msg):
+                    verification_results["missing"].append((rel_path, hash_file))
+                    _emit_stream(bytes_hashed, total_verify_bytes, el_sec, eta_sec, f"[MISSING] {rel_path}")
+                else:
+                    _emit_stream(bytes_hashed, total_verify_bytes, el_sec, eta_sec, f"[FAILED: {err_msg}] {rel_path}")
+                    verification_results["failed"].append((rel_path, expected_hash, err_msg, hash_file))
+
+                    if is_optical_drive(full_path) or is_optical_drive(base_dir):
+                        _cleanup_all_active_io()
+                        for rem_item in items_to_verify[item_idx + 1:]:
+                            rem_hfile, _, rem_rpath, _, rem_exp, _, rem_sz = rem_item
+                            verification_results["failed"].append((rem_rpath, rem_exp, "ABORTED (Optical Media Unreadable / Scratched Disc)", rem_hfile))
+                            bytes_hashed += rem_sz
+                        _emit_stream(total_verify_bytes, total_verify_bytes, el_sec, 0, "[ABORTED: Optical Media Failure]")
+                        break
+
+        if IS_INTERRUPTED or self._is_cancelled:
+            return
 
         elapsed_total = max(1, int(time.time() - start_time))
         if sys.stdout is not None:
@@ -1144,14 +1499,37 @@ class DropTreeWidget(QTreeWidget):
         self.header().setStretchLastSection(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
+    def _has_valid_drop_items(self, event):
+        if not event.mimeData().hasUrls():
+            return False
+        ignore_types = DEFAULT_IGNORE_TYPES
+        ignore_files = DEFAULT_IGNORE_FILES
+        ignore_folders = DEFAULT_IGNORE_FOLDERS
+        window = self.window()
+        if window and hasattr(window, 'settings'):
+            ignore_types = window.settings.value("ignore_types", DEFAULT_IGNORE_TYPES)
+            ignore_files = window.settings.value("ignore_files", DEFAULT_IGNORE_FILES)
+            ignore_folders = window.settings.value("ignore_folders", DEFAULT_IGNORE_FOLDERS)
+
+        for url in event.mimeData().urls():
+            file_path = os.path.normpath(url.toLocalFile()).replace('/', os.sep)
+            if file_path and os.path.exists(file_path):
+                if file_path.lower().endswith(CHECKSUM_EXTS):
+                    continue
+                is_dir = os.path.isdir(file_path)
+                item_name = os.path.basename(file_path)
+                if not is_ignored(item_name, is_dir=is_dir, ignore_types=ignore_types, ignore_files=ignore_files, ignore_folders=ignore_folders):
+                    return True
+        return False
+
     def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
+        if self._has_valid_drop_items(event):
             event.acceptProposedAction()
         else:
             event.ignore()
 
     def dragMoveEvent(self, event):
-        if event.mimeData().hasUrls():
+        if self._has_valid_drop_items(event):
             event.acceptProposedAction()
         else:
             event.ignore()
@@ -1159,10 +1537,23 @@ class DropTreeWidget(QTreeWidget):
     def dropEvent(self, event):
         if event.mimeData().hasUrls():
             all_paths = self.get_all_paths()
+            ignore_types = DEFAULT_IGNORE_TYPES
+            ignore_files = DEFAULT_IGNORE_FILES
+            ignore_folders = DEFAULT_IGNORE_FOLDERS
+            window = self.window()
+            if window and hasattr(window, 'settings'):
+                ignore_types = window.settings.value("ignore_types", DEFAULT_IGNORE_TYPES)
+                ignore_files = window.settings.value("ignore_files", DEFAULT_IGNORE_FILES)
+                ignore_folders = window.settings.value("ignore_folders", DEFAULT_IGNORE_FOLDERS)
+
             for url in event.mimeData().urls():
                 file_path = os.path.normpath(url.toLocalFile()).replace('/', os.sep)
                 if file_path and os.path.exists(file_path):
                     if file_path.lower().endswith(CHECKSUM_EXTS):
+                        continue
+                    is_dir = os.path.isdir(file_path)
+                    item_name = os.path.basename(file_path)
+                    if is_ignored(item_name, is_dir=is_dir, ignore_types=ignore_types, ignore_files=ignore_files, ignore_folders=ignore_folders):
                         continue
                     if file_path not in all_paths:
                         all_paths.append(file_path)
@@ -1235,14 +1626,31 @@ class KryptDistApp(QMainWindow):
 
         # Parse command line inputs (e.g. from SendTo or file drag onto script)
         self.target_paths = []
+        raw_passed_args = []
+        ignore_types = self.settings.value("ignore_types", DEFAULT_IGNORE_TYPES)
+        ignore_files = self.settings.value("ignore_files", DEFAULT_IGNORE_FILES)
+        ignore_folders = self.settings.value("ignore_folders", DEFAULT_IGNORE_FOLDERS)
+
         if len(sys.argv) > 1:
             for arg in sys.argv[1:]:
                 clean_arg = arg.strip('"\'')
                 if clean_arg.startswith("-") or clean_arg.startswith("/"):
                     continue
                 clean_p = os.path.abspath(clean_arg)
-                if os.path.exists(clean_p) and clean_p not in self.target_paths:
-                    self.target_paths.append(clean_p)
+                if os.path.exists(clean_p):
+                    raw_passed_args.append(clean_p)
+                    is_dir = os.path.isdir(clean_p)
+                    item_name = os.path.basename(clean_p)
+                    if clean_p.lower().endswith(CHECKSUM_EXTS):
+                        if clean_p not in self.target_paths:
+                            self.target_paths.append(clean_p)
+                    elif not is_ignored(item_name, is_dir=is_dir, ignore_types=ignore_types, ignore_files=ignore_files, ignore_folders=ignore_folders):
+                        if clean_p not in self.target_paths:
+                            self.target_paths.append(clean_p)
+
+        # If items were explicitly passed from CLI/SendTo but ALL were ignored, exit immediately
+        if raw_passed_args and not self.target_paths:
+            sys.exit(0)
 
         self.target_paths.sort(key=natural_sort_key)
 
@@ -1570,7 +1978,7 @@ class KryptDistApp(QMainWindow):
     def show_manual(self):
         dialog = QDialog(self)
         dialog.setWindowTitle("Manual")
-        dialog.resize(650, 540)
+        dialog.resize(650, 560)
 
         icon_path = os.path.join(get_bundle_dir(), "KryptDist_internal", "icons", "KryptDist_ghost_icon.svg")
         if os.path.exists(icon_path):
@@ -1621,38 +2029,42 @@ class KryptDistApp(QMainWindow):
             f"<li><b>Delete Primary Hashes First:</b> Deletes any existing root primary <code>.hash</code> file or individual file <code>.hash</code> manifests before generating new checksums.</li>"
             f"<li><b>Delete Subdirectory Hashes First:</b> Cleans out existing subhashes across all subfolders prior to generation.</li>"
             f"</ul>"
-            f"<h2>PREFERENCES &amp; OPTIONS</h2>"
+            f"<h2>PREFERENCES, IGNORE RULES &amp; NOTIFICATIONS</h2>"
             f"<ul>"
             f"<li><b>Ignore Rules:</b> Configure ignored file extensions, specific file names, and directories under <b>Tools &gt; Preferences &gt; File Extensions to Ignore</b>.</li>"
-            f"<li><b>Disable Notification Sounds:</b> Enable under <b>Tools &gt; Preferences &gt; Options</b> to mute completion and alert chimes while retaining visual badges.</li>"
+            f"<li><b>Startup &amp; SendTo Filtering:</b> Launching or sending exclusively ignored items (e.g., <code>folder.jpg</code>) automatically exits cleanly without opening the GUI. Mixed selections automatically strip ignored items from the target list.</li>"
+            f"<li><b>Drag &amp; Drop Feedback:</b> Dragging only ignored items over the list displays a forbidden <code>🚫</code> cursor and rejects the drop.</li>"
+            f"<li><b>Voice Notifications:</b> Under <b>Tools &gt; Preferences &gt; Notifications</b>, select between natural voice personas (<b>Emma [GB]</b> and <b>Heart [USA]</b>) generated with Kokoro TTS, complete with an inline preview button (<code>▶</code>).</li>"
+            f"<li><b>Granular Event Alerts:</b> Selectively enable or disable audio voice alerts for <b>Hash Generation Completed</b>, <b>Hash Verification Completed</b>, and <b>Hash Verification Failed</b>.</li>"
+            f"<li><b>Disable Notification Sounds:</b> Master mute toggle under <b>Tools &gt; Preferences &gt; Notifications</b> disables and grays out all audio alerts while retaining visual badges. (All audio is automatically suppressed in headless CLI mode).</li>"
             f"<li><b>Wildcard Support:</b> Patterns accept wildcards (e.g. <code>*.tmp</code>, <code>Thumbs.*</code>, <code>.Trash-*</code>) to cleanly exclude OS metadata, caches, and unwanted artifacts.</li>"
-            f"<li><b>Defaults:</b> Preloaded with comprehensive exclusion sets for existing checksum manifests, system volumes, OS caches, and media companion files.</li>"
+            f"</ul>"
+            f"<h2>HARDWARE WATCHDOG &amp; OPTICAL MEDIA PROTECTION</h2>"
+            f"<ul>"
+            f"<li><b>Win32 Overlapped Watchdog:</b> Enforces a strict 20-second timeout on all storage media. Damaged sectors and hardware stalls are cleanly aborted using kernel <code>CancelIoEx</code> without freezing the console or GUI.</li>"
+            f"<li><b>Optical Media Fast-Abort:</b> Automatically detects CD, DVD, and BD-R/RE media (<code>DRIVE_CDROM</code>). On the very first read error, CRC failure (<code>Error 23</code>), or timeout, KryptDist immediately cancels all remaining files on the disc, shuts down the optical laser/spindle, and presents the error report, eliminating drive wear.</li>"
+            f"<li><b>Non-Optical Resilience:</b> For HDDs, SSDs, and USB drives, read errors are isolated per file, allowing the remainder of the disk to be audited.</li>"
+            f"<li><b>Clean Interruption:</b> Pressing <code>Ctrl+C</code> cancels all active I/O handles instantly, closes the OSD, and exits without false error logs.</li>"
             f"</ul>"
             f"<h2>SUPPORTED ALGORITHMS</h2>"
             f"<ul>"
             f"<li><b>Cryptographic:</b> BLAKE3, BLAKE2 (2b/2s), SHA-512, SHA-256, SHA-3 (SHA3-256).</li>"
             f"<li><b>Fast Checksum &amp; Legacy:</b> xx3 (xxHash3), SHA-1, MD5, SFV / CRC32.</li>"
             f"</ul>"
-            f"<h2>INTERFACE &amp; THEMES</h2>"
+            f"<h2>INTERFACE, THEMES &amp; OSD</h2>"
             f"<ul>"
             f"<li><b>Dual-Pane File &amp; Folder Picker:</b> Click <b>+ Add Files &amp; Folders...</b> to browse drives and folders in a split-tree explorer dialog supporting simultaneous multi-selection of both files and directories.</li>"
             f"<li><b>Tree Navigation:</b> Target lists and progress indicators display clean file/folder names. Click individual disclosure triangles (<code>▶</code> / <code>▼</code>) to view complete, word-wrapped paths with zero horizontal scrolling.</li>"
-            f"<li><b>Header Toggle:</b> Click the triangle icon on the far right of <b>Target Files &amp; Folders</b> to expand or collapse all target paths at once.</li>"
-            f"<li><b>Persistent UI State:</b> Expanded/collapsed triangle states are remembered across restarts.</li>"
             f"<li><b>Themes:</b> Switch between Dark, Light, and System themes via <b>Tools &gt; Themes</b>. All views and the verification OSD adapt dynamically to the selected theme.</li>"
+            f"<li><b>Verification OSD:</b> Real-time On-Screen Display with badges (green checkmark on success, red X on mismatch) and optional error logging in <code>KryptDist_internal/logs/</code>.</li>"
             f"</ul>"
-            f"<h2>VERIFICATION &amp; OSD</h2>"
-            f"<p>Pass checksum files via command line or Windows <b>SendTo</b> menu to trigger instant container verification. "
-            f"A lightweight On-Screen Display (OSD) provides real-time progress. Completed checks present clear visual status badges "
-            f"(green checkmark on success, red X on mismatch). If errors occur, users are prompted whether to generate and open an error log in <code>KryptDist_internal/logs/</code>.</p>"
             f"<h2>CLI &amp; HEADLESS INTEGRATION</h2>"
             f"<ul>"
-            f"<li><b>Single-File Verification:</b> Invoke with <code>-v &lt;file&gt;</code> or <code>--verify-file &lt;file&gt;</code> "
-            f"for instant, headless verification against local or parent hash containers.</li>"
-            f"<li><b>Explicit Hash Manifest:</b> Use <code>--hash-file &lt;manifest.hash&gt;</code> alongside <code>-v</code> to test against a specific checksum manifest instead of automatic container discovery.</li>"
-            f"<li><b>Headless Mode:</b> Pass <code>--headless</code> (or <code>-headless</code>, <code>/headless</code>) during container verification to suppress all GUI prompts/dialogs and automatically write failures to <code>KryptDist_internal/logs/</code>.</li>"
+            f"<li><b>Smoothed ETA Engine:</b> Real-time terminal progress stream (<code>VERIFY_PROGRESS</code>) calculates speed and ETA using a smoothed 5-second rolling window and a 2-second warm-up buffer for stable estimates across CAV optical tracks.</li>"
+            f"<li><b>Single-File Verification:</b> Invoke with <code>-v &lt;file&gt;</code> or <code>--verify-file &lt;file&gt;</code> for instant, headless verification against local or parent hash containers.</li>"
+            f"<li><b>Explicit Hash Manifest:</b> Use <code>--hash-file &lt;manifest.hash&gt;</code> alongside <code>-v</code> to test against a specific checksum manifest.</li>"
+            f"<li><b>Headless Mode:</b> Pass <code>--headless</code> (or <code>-headless</code>, <code>/headless</code>) to suppress all GUI dialogs and write failures to logs.</li>"
             f"<li><b>Exit Codes:</b> Single-file verification returns <code>0</code> on match, <code>2</code> on mismatch/missing. Headless container verification returns <code>0</code> on success, <code>1</code> on error.</li>"
-            f"<li><b>Preloaded Targets:</b> Pass one or more file or directory paths as CLI arguments to launch the GUI preloaded with those targets.</li>"
             f"</ul>"
         )
 
@@ -1693,9 +2105,12 @@ class KryptDistApp(QMainWindow):
             "<p>A high-performance checksum generator and distributor supporting BLAKE2, BLAKE3, and primary and subdirectory hashes.</p>"
             "<p>Official License: <a href=\"https://www.gnu.org/licenses/gpl-3.0.html\">gnu.org/licenses/gpl-3.0.html</a></p>"
             "<hr>"
-            "<p>Icon Credits:<br>"
+            "<p><b>Icon Credits:</b><br>"
             "'Ghost SVG Vector' by <a href=\"https://www.svgrepo.com/svg/54269/ghost\">SVGRepo</a>.<br>"
-            "Used under CC0 License. Modified by pwshAgyjkcrg761.</p>"
+            "Used under <a href=\"https://creativecommons.org/publicdomain/zero/1.0/\">CC0 License</a>. Modified by pwshAgyjkcrg761.</p>"
+            "<p><b>Audio Notification Credits:</b><br>"
+            "Audio notifications generated with <a href=\"https://huggingface.co/spaces/hexgrad/Kokoro-TTS\">Kokoro TTS</a>.<br>"
+            "Used under <a href=\"https://creativecommons.org/publicdomain/zero/1.0/\">CC0 License</a>.</p>"
         )
         text_browser.setHtml(about_text)
         layout.addWidget(text_browser)
@@ -1729,6 +2144,7 @@ class KryptDistApp(QMainWindow):
             icon_path = os.path.join(internal_dir, "icons", "KryptDist_ghost_icon.svg")
 
         if has_failed or has_missing:
+            play_audio_notification("verify_failed", getattr(self, 'settings', None))
             self.osd.trigger_error_flash()
             QApplication.processEvents()
             self.osd.close()
@@ -1810,6 +2226,7 @@ class KryptDistApp(QMainWindow):
             self.osd.close()
             if getattr(self, 'is_headless', False):
                 sys.exit(0)
+            play_audio_notification("verify_completed", getattr(self, 'settings', None))
             msg_box = QMessageBox(self if self.isVisible() else None)
             msg_box.setWindowFlags(msg_box.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
             msg_box.setWindowTitle("KryptDist - Hash Verification")
@@ -2055,6 +2472,7 @@ class KryptDistApp(QMainWindow):
         else:
             self.status_tree_root.setText(0, "Status: Complete!")
             self.status_path_label.setText("")
+            play_audio_notification("gen_completed", getattr(self, 'settings', None))
             file_word = "file" if total_new_files == 1 else "files"
             self.show_alert("Complete", f"Successfully generated checksums for {total_new_files} {file_word}.", icon_type="info")
 
